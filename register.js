@@ -5,6 +5,7 @@ const CONTENT_SCRIPT_ID = 'cvat-3d-super-pro';
 const BRIDGE_SCRIPT_ID = 'cvat-3d-super-pro-bridge';
 
 const CONTENT_SCRIPT_FILES = [
+  'content/icons.js',
   'content/ui.js',
   'content/geom.js',
   'content/iou3d.js',
@@ -18,6 +19,9 @@ const CONTENT_SCRIPT_FILES = [
   'content/case1.js',
   'content/case2.js',
   'content/case3.js',
+  'content/context-menu.js',
+  'content/hud.js',
+  'content/hotkeys.js',
   'content/app.js',
 ];
 

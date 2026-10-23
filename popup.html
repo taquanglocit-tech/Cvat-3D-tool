@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>CVAT 3D Super Pro</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 12px;
+      background: #0d1117;
+      color: #c9d1d9;
+      line-height: 1.4;
+      user-select: none;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+    }
+    .title-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .app-title {
+      font-weight: 700;
+      color: #fff;
+      font-size: 13px;
+    }
+    .author-badge {
+      background: #21262d;
+      border: 1px solid #30363d;
+      color: #58a6ff;
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+    .content {
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .origin-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .origin-label {
+      font-size: 11px;
+      color: #8b949e;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .origin-url {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 11px;
+      color: #e6edf3;
+      word-break: break-all;
+    }
+    .status-badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .status-badge.active {
+      background: rgba(35, 134, 54, 0.2);
+      color: #3fb950;
+      border: 1px solid rgba(56, 139, 253, 0.1);
+    }
+    .status-badge.inactive {
+      background: rgba(110, 118, 129, 0.2);
+      color: #8b949e;
+    }
+    .btn-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    button {
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      background: #21262d;
+      color: #c9d1d9;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: background 0.15s, color 0.15s;
+    }
+    button:hover:not(:disabled) {
+      background: #30363d;
+      color: #fff;
+    }
+    button.primary {
+      background: #1f6feb;
+      border-color: #1f6feb;
+      color: #fff;
+      font-weight: 600;
+    }
+    button.primary:hover:not(:disabled) {
+      background: #388bfd;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .footer {
+      padding: 8px 14px;
+      background: #161b22;
+      border-top: 1px solid #30363d;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: #8b949e;
+    }
+    .footer a {
+      color: #58a6ff;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title-group">
+      <span class="app-title">3D Super Pro</span>
+      <span class="author-badge">taquanglocit-tech</span>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="origin-card">
+      <div class="origin-label">
+        <span>Trang web hiện tại:</span>
+        <span id="statusBadge" class="status-badge inactive">Đang kiểm tra…</span>
+      </div>
+      <div id="originText" class="origin-url">–</div>
+    </div>
+
+    <div class="btn-group">
+      <button id="toggleBtn" class="primary">
+        <span>Bật trên Domain này</span>
+      </button>
+      <button id="injectBtn" style="display: none;">
+        <span>Tải lại / Kích hoạt lại ngay</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="footer">
+    <a id="openOptionsLink">Cấu hình nâng cao</a>
+    <span>v1.0.0</span>
+  </div>
+
+  <script src="register.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

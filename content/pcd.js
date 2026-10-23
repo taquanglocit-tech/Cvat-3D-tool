@@ -148,12 +148,25 @@
 
     // Chuẩn hoá intensity về khoảng [0.0, 1.0] để shader WebGL vẽ
     let maxI = 1.0;
-    for (let i = 0; i < finalI.length; i++) {
-      if (finalI[i] > maxI) maxI = finalI[i];
-    }
-    if (maxI > 1.0) {
+    if (idxI >= 0 && types && sizes) {
+      const iType = types[idxI];
+      const iSize = sizes[idxI];
+      if (iType === 'U' && iSize === 1) maxI = 255.0;
+      else if (iType === 'U' && iSize === 2) maxI = 65535.0;
+      else {
+        for (let i = 0; i < finalI.length; i++) {
+          if (finalI[i] > maxI) maxI = finalI[i];
+        }
+      }
+    } else {
       for (let i = 0; i < finalI.length; i++) {
-        finalI[i] /= maxI;
+        if (finalI[i] > maxI) maxI = finalI[i];
+      }
+    }
+
+    if (maxI > 0) {
+      for (let i = 0; i < finalI.length; i++) {
+        finalI[i] = Math.min(1.0, Math.max(0.0, finalI[i] / maxI));
       }
     }
 

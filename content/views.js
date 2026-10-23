@@ -73,11 +73,21 @@
     return m ? [1, 2, 3].map((i) => parseInt(m[i], 16) / 255) : [0.35, 0.82, 0.48];
   }
 
+  function distSeg(px, py, p1, p2) {
+    const dx = p2[0] - p1[0], dy = p2[1] - p1[1];
+    const l2 = dx * dx + dy * dy;
+    if (!l2) return Math.hypot(px - p1[0], py - p1[1]);
+    const t = Math.max(0, Math.min(1, ((px - p1[0]) * dx + (py - p1[1]) * dy) / l2));
+    return Math.hypot(px - (p1[0] + t * dx), py - (p1[1] + t * dy));
+  }
+
   const HANDLE_R = 7;
+  const activeGrids = new Set();
 
   class GridView {
     constructor(opts) {
       Object.assign(this, opts);
+      activeGrids.add(this);
       this.cells = new Set();
       this.buffers = new Map(); // frame -> { posBuf, intBuf, count }
       this.drag = null;
@@ -126,6 +136,7 @@
     }
 
     destroy() {
+      activeGrids.delete(this);
       this.scroller.removeEventListener('scroll', this.onScroll);
       this.resizeObs.disconnect();
       for (const b of this.buffers.values()) {
@@ -133,6 +144,8 @@
         this.gl.deleteBuffer(b.intBuf);
       }
       this.buffers.clear();
+      if (this.prog) this.gl.deleteProgram(this.prog);
+      if (this.vao) this.gl.deleteVertexArray(this.vao);
       this.gl.getExtension('WEBGL_lose_context')?.loseContext();
       this.glCanvas.remove();
       this.uiCanvas.remove();
@@ -419,35 +432,8 @@
       const corners = G.boxCorners(box);
       const pts = corners.map((p) => this.project(p, cam, cell.view, rect, ppm));
 
-      // 1. Vẽ Ghost Frames (Onion Skinning) kèm điểm laser nếu người dùng bật
-      if (this.ghostFrames && this.getGhostData) {
-        const ghosts = this.getGhostData(cell.frame);
-        if (ghosts) {
-          if (ghosts.prev && ghosts.prev.box) {
-            this.drawGhostBoxOutline(ctx, ghosts.prev.box, cam, cell.view, rect, ppm, '#388bfd', 'Frame trước (t-1)');
-            if (ghosts.prev.points && ghosts.prev.points.length) {
-              this.drawGhostPoints(ctx, ghosts.prev.points, cam, cell.view, rect, ppm, '#388bfd');
-            }
-          }
-          if (ghosts.next && ghosts.next.box) {
-            this.drawGhostBoxOutline(ctx, ghosts.next.box, cam, cell.view, rect, ppm, '#f0883e', 'Frame sau (t+1)');
-            if (ghosts.next.points && ghosts.next.points.length) {
-              this.drawGhostPoints(ctx, ghosts.next.points, cam, cell.view, rect, ppm, '#f0883e');
-            }
-          }
-        }
-      }
-
-      // 1b. Vẽ các điểm LiDAR tích lũy đa frame (Densified Point Cloud)
-      if (this.densify && this.getDensifiedPoints) {
-        const densePts = this.getDensifiedPoints(cell.frame);
-        if (densePts && densePts.length) {
-          this.drawGhostPoints(ctx, densePts, cam, cell.view, rect, ppm, '#58a6ff');
-        }
-      }
-
-      // 2. Vẽ các cạnh của Cuboid hiện tại
-      ctx.lineWidth = pos.keyframe ? 2 : 1.5;
+      // 1. Vẽ các cạnh của Cuboid hiện tại
+      ctx.lineWidth = pos.keyframe ? 1.8 : 1.3;
       ctx.strokeStyle = pos.outside ? '#da3633' : (this.settings.color || '#3fb950');
       ctx.setLineDash(pos.keyframe ? [] : [4, 4]);
 
@@ -459,74 +445,69 @@
       }
       ctx.setLineDash([]);
 
-      // 3. Mũi tên chỉ hướng đầu xe (Heading Arrow) trên Top View
+      // 2. Mũi tên chỉ hướng đầu xe (Heading Arrow) trên Top View
       if (cell.view === 'top') {
         const ax = G.axes(box.r);
         const frontCenter = this.project(G.localToWorld([box.s[0] / 2, 0, 0], box.c, ax), cam, cell.view, rect, ppm);
         const center = this.project(box.c, cam, cell.view, rect, ppm);
         ctx.strokeStyle = '#f0883e';
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = 2.2;
         ctx.beginPath();
         ctx.moveTo(center[0], center[1]);
         ctx.lineTo(frontCenter[0], frontCenter[1]);
         ctx.stroke();
       }
 
-      // 4. Vẽ các tay nắm điều khiển (Handles)
+      // 3. Vẽ các tay nắm điều khiển (Handles)
       const H = this.handles(cell, pos, cam, rect, ppm);
-      for (const h of H.list) {
-        const isCorner = h.a !== 0 && h.b !== 0;
-        ctx.fillStyle = isCorner ? '#da3633' : '#ffffff';
-        ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        if (isCorner) {
-          ctx.arc(h.p[0], h.p[1], 4, 0, Math.PI * 2);
-        } else {
-          ctx.rect(h.p[0] - 3.5, h.p[1] - 3.5, 7, 7);
+      const isLocked = SP.app?.isSizeLocked || this.settings?.isSizeLocked;
+      if (!isLocked) {
+        for (const h of H.list) {
+          const isCorner = h.a !== 0 && h.b !== 0;
+          ctx.fillStyle = isCorner ? '#da3633' : '#ffffff';
+          ctx.strokeStyle = '#000000';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          if (isCorner) {
+            ctx.arc(h.p[0], h.p[1], 3.8, 0, Math.PI * 2);
+          } else {
+            ctx.rect(h.p[0] - 3.2, h.p[1] - 3.2, 6.4, 6.4);
+          }
+          ctx.fill();
+          ctx.stroke();
         }
-        ctx.fill();
-        ctx.stroke();
       }
 
-      // Nút xoay (chấm vàng)
+      // 4. Nút xoay (chấm cam)
       if (cell.view === 'top' || this.settings.allowTilt) {
+        ctx.strokeStyle = '#f0883e';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(H.top[0], H.top[1]);
+        ctx.lineTo(H.rot[0], H.rot[1]);
+        ctx.stroke();
+
         ctx.fillStyle = '#f0883e';
         ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.arc(H.rot[0], H.rot[1], 5, 0, Math.PI * 2);
+        ctx.arc(H.rot[0], H.rot[1], 4.8, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
       }
-    }
 
-    drawGhostBoxOutline(ctx, ghostBox, cam, view, rect, ppm, color, label) {
-      const corners = G.boxCorners(ghostBox);
-      const pts = corners.map((p) => this.project(p, cam, view, rect, ppm));
-      ctx.save();
-      ctx.lineWidth = 1.2;
-      ctx.strokeStyle = color;
-      ctx.setLineDash([3, 3]);
-
-      for (const [i, j] of G.BOX_EDGES) {
-        ctx.beginPath();
-        ctx.moveTo(pts[i][0], pts[i][1]);
-        ctx.lineTo(pts[j][0], pts[j][1]);
-        ctx.stroke();
+      // 5. Nhãn góc nhìn (TOP / SIDE / FRONT), trạng thái OUTSIDE & tải Point Cloud
+      ctx.font = '600 10px SFMono-Regular, Consolas, monospace';
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.fillText(cell.view.toUpperCase(), 6, 13);
+      if (pos.outside) {
+        ctx.fillStyle = '#da3633';
+        ctx.fillText('OUTSIDE', rect.w - 54, 13);
       }
-      ctx.restore();
-    }
-
-    drawGhostPoints(ctx, points, cam, view, rect, ppm, color) {
-      if (!points || !points.length) return;
-      ctx.save();
-      ctx.fillStyle = color;
-      for (let i = 0; i < points.length; i += 3) {
-        const pt = this.project([points[i], points[i + 1], points[i + 2]], cam, view, rect, ppm);
-        ctx.fillRect(pt[0] - 1.25, pt[1] - 1.25, 2.5, 2.5);
+      if (noPoints) {
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.fillText('đang tải cloud…', 6, rect.h - 6);
       }
-      ctx.restore();
     }
 
     hit(cell, x, y) {
@@ -542,9 +523,25 @@
           return { kind: 'rotate', center: H.center };
         }
       }
-      for (const h of H.list) {
-        if (Math.hypot(x - h.p[0], y - h.p[1]) <= HANDLE_R) {
-          return { kind: 'resize', a: h.a, b: h.b };
+
+      // Khóa kích thước: nếu người dùng đang khóa size thì bỏ qua nhận diện resize ở 4 mép hộp
+      const isLocked = SP.app?.isSizeLocked || this.settings?.isSizeLocked;
+      if (!isLocked) {
+        for (const h of H.list) {
+          if (Math.hypot(x - h.p[0], y - h.p[1]) <= HANDLE_R) {
+            return { kind: 'resize', a: h.a, b: h.b };
+          }
+        }
+        const edges = [
+          { a: 0, b: -1, p1: H.P(-1, -1), p2: H.P(1, -1) },
+          { a: 1, b: 0, p1: H.P(1, -1), p2: H.P(1, 1) },
+          { a: 0, b: 1, p1: H.P(1, 1), p2: H.P(-1, 1) },
+          { a: -1, b: 0, p1: H.P(-1, 1), p2: H.P(-1, -1) },
+        ];
+        for (const ed of edges) {
+          if (distSeg(x, y, ed.p1, ed.p2) <= 5) {
+            return { kind: 'resize', a: ed.a, b: ed.b };
+          }
         }
       }
       const pLocal = G.worldToLocal(this.unproject(x, y, cam, cell.view, rect, ppm), pos.box.c, G.axes(pos.box.r));
@@ -571,12 +568,12 @@
 
         this.drag = {
           cell, target: h, startBox: G.cloneBox(pos.box),
-          startX: x, startY: y, cam, ppm, rect,
+          startX: x, startY: y, cam, ppm, rect, moved: false,
         };
         this.onEditStart?.(cell.frame);
       } else {
         cell.el.setPointerCapture(e.pointerId);
-        this.drag = { cell, target: { kind: 'pan' }, startX: x, startY: y, startPan: cell.pan.slice() };
+        this.drag = { cell, target: { kind: 'pan' }, startX: x, startY: y, startPan: cell.pan.slice(), moved: false };
       }
     }
 
@@ -584,7 +581,7 @@
       if (!this.drag) {
         const r = cell.el.getBoundingClientRect();
         const h = this.hit(cell, e.clientX - r.left, e.clientY - r.top);
-        cell.el.style.cursor = h ? (h.kind === 'move' ? 'move' : h.kind === 'rotate' ? 'crosshair' : 'nwse-resize') : 'default';
+        cell.el.style.cursor = h ? (h.kind === 'move' ? 'move' : h.kind === 'rotate' ? 'crosshair' : 'nwse-resize') : 'grab';
         return;
       }
       const d = this.drag;
@@ -600,6 +597,9 @@
         return;
       }
 
+      if (!d.moved && Math.hypot(dx, dy) < 1.5) return;
+      d.moved = true;
+
       const V = VIEWS[d.cell.view];
       const start = d.startBox;
       const cur = G.cloneBox(start);
@@ -609,6 +609,8 @@
         const du = dx / d.ppm, dv = -dy / d.ppm;
         cur.c = G.add(start.c, G.add(G.scale(d.cam.ax[V.u], du), G.scale(d.cam.ax[V.v], dv)));
       } else if (d.target.kind === 'resize') {
+        const isLocked = SP.app?.isSizeLocked || this.settings?.isSizeLocked;
+        if (isLocked) return;
         const du = dx / d.ppm, dv = -dy / d.ppm;
         const ui = V.ui, vi = V.vi;
         if (d.target.a !== 0) {
@@ -625,7 +627,9 @@
         const a2 = Math.atan2(y - cy, x - cx);
         let da = a2 - a1;
         if (e.shiftKey) da = Math.round(da / (Math.PI / 36)) * (Math.PI / 36);
-        cur.r = G.rotateLocal(start.r, 2, -da);
+        const axis = V.di;
+        const sign = d.cell.view === 'side' ? 1 : -1;
+        cur.r = G.rotateLocal(start.r, axis, sign * da);
       }
 
       this.onEdit?.(d.cell.frame, cur);
@@ -635,8 +639,12 @@
     pointerUp(e) {
       if (!this.drag) return;
       if (this.drag.target.kind !== 'pan') {
-        const pos = this.getBox(this.drag.cell.frame);
-        this.onEditEnd?.(this.drag.cell.frame, this.drag.startBox, pos ? pos.box : this.drag.startBox);
+        if (this.drag.moved) {
+          const pos = this.getBox(this.drag.cell.frame);
+          this.onEditEnd?.(this.drag.cell.frame, this.drag.startBox, pos ? pos.box : this.drag.startBox);
+        } else {
+          this.onEditCancel?.(this.drag.cell.frame);
+        }
       }
       this.drag = null;
     }
@@ -644,14 +652,29 @@
     wheel(e, cell) {
       e.preventDefault();
       const k = e.deltaY < 0 ? 1.15 : 0.87;
-      const r = cell.el.getBoundingClientRect();
-      this.zoomCell(cell, k, e.clientX - r.left, e.clientY - r.top);
+      if (e.shiftKey) {
+        this.settings.zoom ||= { top: 1, side: 1, front: 1 };
+        this.settings.zoom[cell.view] = Math.min(20, Math.max(0.1, (this.settings.zoom[cell.view] || 1) * k));
+        this.requestRender();
+      } else {
+        const r = cell.el.getBoundingClientRect();
+        this.zoomCell(cell, k, e.clientX - r.left, e.clientY - r.top);
+      }
     }
   }
 
   window.addEventListener('pointerup', (e) => {
-    // Gọi phương thức kết thúc kéo
+    for (const grid of activeGrids) {
+      grid.pointerUp(e);
+    }
+  });
+
+  window.addEventListener('pointercancel', (e) => {
+    for (const grid of activeGrids) {
+      grid.pointerUp(e);
+    }
   });
 
   SP.GridView = GridView;
+  SP.VIEWS = VIEWS;
 })();

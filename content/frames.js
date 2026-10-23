@@ -10,7 +10,7 @@
     constructor(store, { quality = 'compressed' } = {}) {
       this.store = store;
       this.quality = quality;
-      this.chunkSize = store.meta.chunk_size || 1;
+      this.chunkSize = (store && store.meta && store.meta.chunk_size) || 1;
       this.chunks = new Map();   // chunk index -> Promise<void>
       this.clouds = new Map();   // frame -> CloudData { xyz: Float32Array, intensity: Float32Array }
       this.images = new Map();   // frame -> Promise<[{name, url}]>
@@ -18,7 +18,8 @@
     }
 
     position(frame) {
-      const k = this.store.frames.indexOf(frame);
+      const frames = this.store?.frames || [];
+      const k = frames.indexOf(frame);
       if (k < 0) throw new Error(`Frame ${frame} không thuộc job`);
       return { chunk: Math.floor(k / this.chunkSize), offset: k % this.chunkSize };
     }
@@ -48,7 +49,7 @@
       return this.clouds.get(frame) || { xyz: new Float32Array(0), intensity: new Float32Array(0), points: 0 };
     }
 
-    async preload(frames, onProgress, concurrency = 3) {
+    async preload(frames, onProgress, concurrency = 6) {
       const needed = [...new Set(frames.map((f) => this.position(f).chunk))];
       const parts = new Map(needed.map((c) => [c, this.chunks.has(c) ? null : 0]));
       let done = 0;
@@ -83,14 +84,61 @@
       await Promise.all(Array.from({ length: Math.min(concurrency, needed.length) }, worker));
     }
 
+    // Tải ngầm song song các chunk còn lại của job dưới nền (Background Prefetch)
+    // Giúp người dùng khi lướt tới các frame xa không phải chờ tải lại
+    startBackgroundPrefetch(allFrames = null) {
+      if (this._bgRunning) return;
+      this._bgRunning = true;
+      const frames = allFrames || this.store?.frames || [];
+      const chunks = [...new Set(frames.map((f) => this.position(f).chunk))];
+      const remaining = chunks.filter((c) => !this.chunks.has(c));
+
+      const worker = async () => {
+        while (remaining.length) {
+          const c = remaining.shift();
+          try {
+            await this.loadChunk(c);
+          } catch (err) {
+            console.warn(`[CVAT Super Pro] Tải ngầm chunk ${c} thất bại:`, err);
+          }
+          // Tạm nghỉ 60ms giữa các chunk để nhường băng thông và CPU cho tương tác của người dùng
+          await new Promise((r) => setTimeout(r, 60));
+        }
+        this._bgRunning = false;
+      };
+
+      // Chạy 2 luồng ngầm song song (vừa đủ nhanh mà không nghẽn mạng)
+      const conc = Math.min(2, remaining.length);
+      for (let i = 0; i < conc; i++) worker();
+    }
+
+    // Tải lại (Reload): Chỉ xóa cache khi người dùng chủ động bấm yêu cầu tải lại
+    reload(frames = null) {
+      if (Array.isArray(frames) && frames.length) {
+        const chunks = new Set(frames.map((f) => this.position(f).chunk));
+        for (const c of chunks) {
+          this.chunks.delete(c);
+          const base = c * this.chunkSize;
+          for (let i = 0; i < this.chunkSize; i++) {
+            const f = this.store.frames[base + i];
+            if (f !== undefined) this.clouds.delete(f);
+          }
+        }
+        return this.preload(frames);
+      } else {
+        this.chunks.clear();
+        this.clouds.clear();
+      }
+    }
+
     chunkFrames(chunk) {
-      return this.store.frames.slice(chunk * this.chunkSize, (chunk + 1) * this.chunkSize);
+      return (this.store?.frames || []).slice(chunk * this.chunkSize, (chunk + 1) * this.chunkSize);
     }
 
     contextImages(frame) {
       if (!this.images.has(frame)) {
         const p = (async () => {
-          const meta = this.store.meta.frames?.[this.store.frames.indexOf(frame)] || this.store.meta.frames?.[0];
+          const meta = this.store?.meta?.frames?.[this.store?.frames?.indexOf(frame)] || this.store?.meta?.frames?.[0];
           if (meta && meta.related_files === 0) return [];
           const buf = await SP.api.getContextImages(this.store.jid, frame);
           const entries = SP.zip.listEntries(buf);

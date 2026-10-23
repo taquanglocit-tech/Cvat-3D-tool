@@ -6,45 +6,69 @@
   const { h, fmt } = SP.ui;
 
   const CSS = `
-    .c3-container { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: #0d1117; color: #c9d1d9; }
-    .c3-top { padding: 10px 16px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-    .c3-body { flex: 1; display: grid; grid-template-columns: 1.25fr 1fr; gap: 12px; padding: 14px; min-height: 0; overflow: hidden; }
-    .c3-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-    .c3-card-head { padding: 10px 14px; background: #21262d; border-bottom: 1px solid #30363d; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
-    .c3-card-body { flex: 1; overflow-y: auto; padding: 12px; }
-    .alert-item { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 10px; transition: border-color 0.15s; }
-    .alert-item:hover { border-color: #58a6ff; }
-    .alert-item.overlap { border-left: 4px solid #da3633; }
-    .alert-item.size { border-left: 4px solid #d29922; }
-    .alert-item.speed { border-left: 4px solid #a371f7; }
-    .alert-badge { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; }
-    .alert-badge.overlap { background: #da3633; color: #fff; }
-    .alert-badge.size { background: #d29922; color: #fff; }
-    .alert-badge.speed { background: #8957e5; color: #fff; }
+    .c3-container { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: #141414; color: #d9d9d9; }
+    .c3-top { padding: 8px 16px; background: #1f1f1f; border-bottom: 1px solid #303030; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .c3-body { flex: 1; display: grid; grid-template-columns: 1.25fr 1fr; gap: 12px; padding: 12px; min-height: 0; overflow: hidden; }
+    .c3-card { background: #1f1f1f; border: 1px solid #303030; border-radius: 4px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+    .c3-card-head { padding: 8px 12px; background: #262626; border-bottom: 1px solid #303030; font-weight: 600; font-size: 12px; display: flex; align-items: center; justify-content: space-between; }
+    .c3-card-body { flex: 1; overflow-y: auto; padding: 10px; }
+    .alert-item { background: #141414; border: 1px solid #303030; border-radius: 3px; padding: 8px 12px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 10px; transition: border-color 0.15s; }
+    .alert-item:hover { border-color: #177ddc; }
+    .alert-item.overlap { border-left: 3px solid #ff4d4f; }
+    .alert-item.size { border-left: 3px solid #faad14; }
+    .alert-item.speed { border-left: 3px solid #722ed1; }
+    .alert-badge { font-size: 11px; font-weight: 500; padding: 1px 6px; border-radius: 2px; }
+    .alert-badge.overlap { background: rgba(255, 77, 79, 0.2); color: #ff7875; border: 1px solid #ff4d4f; }
+    .alert-badge.size { background: rgba(250, 173, 20, 0.2); color: #ffc53d; border: 1px solid #faad14; }
+    .alert-badge.speed { background: rgba(114, 46, 209, 0.2); color: #b37feb; border: 1px solid #722ed1; }
     .matrix-table { border-collapse: collapse; font-size: 11px; text-align: center; }
-    .matrix-table th, .matrix-table td { padding: 6px 8px; border: 1px solid #30363d; min-width: 45px; }
-    .matrix-table th { background: #21262d; color: #8b949e; position: sticky; top: 0; }
-    .matrix-cell { font-weight: 600; border-radius: 3px; cursor: default; }
-    .matrix-cell.safe { background: rgba(35, 134, 54, 0.15); color: #3fb950; }
-    .matrix-cell.warn { background: rgba(210, 153, 34, 0.25); color: #e3b341; }
-    .matrix-cell.danger { background: rgba(218, 54, 51, 0.35); color: #f85149; font-weight: 700; }
-    .filter-btn { background: #21262d; border: 1px solid #30363d; color: #8b949e; padding: 3px 8px; font-size: 11px; border-radius: 4px; cursor: pointer; }
-    .filter-btn.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+    .matrix-table th, .matrix-table td { padding: 6px 8px; border: 1px solid #303030; min-width: 45px; }
+    .matrix-table th { background: #262626; color: #8c8c8c; position: sticky; top: 0; font-weight: 500; }
+    .matrix-cell { font-weight: 500; border-radius: 2px; cursor: default; }
+    .matrix-cell.safe { background: rgba(82, 196, 26, 0.15); color: #73d13d; }
+    .matrix-cell.warn { background: rgba(250, 173, 20, 0.2); color: #ffc53d; }
+    .matrix-cell.danger { background: rgba(255, 77, 79, 0.25); color: #ff7875; font-weight: 600; }
+    .filter-btn { background: #141414; border: 1px solid #434343; color: #8c8c8c; padding: 2px 8px; font-size: 11px; border-radius: 2px; cursor: pointer; }
+    .filter-btn.active { background: #177ddc; color: #fff; border-color: #177ddc; }
   `;
 
   function mount(app, root) {
     const store = app.store;
     root.append(h('style', {}, CSS));
 
+    if (!store || !store.meta || !store.frames?.length) {
+      const waitBox = h('div', { class: 'bar', style: { color: '#8c8c8c', padding: '24px', textAlign: 'center' } },
+        'Đang kết nối và tải dữ liệu từ CVAT, vui lòng chờ trong giây lát…'
+      );
+      root.append(waitBox);
+      const unbind = store?.on?.('load', () => {
+        root.replaceChildren();
+        app.mounted = mount(app, root);
+      });
+      return {
+        refresh() {
+          if (app.store?.meta) {
+            root.replaceChildren();
+            app.mounted = mount(app, root);
+          }
+        },
+        unmount() { unbind?.(); }
+      };
+    }
+
     let currentFrame = store.frames[0] || 0;
     let allQAErrors = [];
     let currentFilter = 'all';
 
-    const thresholdInput = h('input', { type: 'number', min: '0.05', max: '0.9', step: '0.05', value: '0.25', style: { width: '50px' } });
-    const scanBtn = h('button', { class: 'primary' }, '🔍 Quét Lỗi & Trùng Lặp Toàn Job');
-    const pBar = h('span', { style: { fontSize: '12px', color: '#8b949e' } });
-    const frameInput = h('input', { type: 'number', value: currentFrame, min: store.frames[0], max: store.frames[store.frames.length - 1], style: { width: '60px' } });
-    const viewMatrixBtn = h('button', {}, 'Xem Frame Này');
+    const thresholdInput = h('input', { type: 'number', min: '0.05', max: '0.9', step: '0.05', value: '0.25', style: { width: '50px', background: '#141414', border: '1px solid #434343', color: '#fff', borderRadius: '2px', padding: '2px 4px' } });
+    const scanBtn = h('button', {
+      style: { display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#177ddc', color: '#fff', border: 0, borderRadius: '2px', padding: '4px 10px', cursor: 'pointer', fontSize: '12px', fontWeight: 500 }
+    }, SP.icons.overlap(12), 'Quét Lỗi & Trùng Lặp');
+    const pBar = h('span', { style: { fontSize: '12px', color: '#8c8c8c' } });
+    const frameInput = h('input', { type: 'number', value: currentFrame, min: store.frames[0], max: store.frames[store.frames.length - 1], style: { width: '60px', background: '#141414', border: '1px solid #434343', color: '#fff', borderRadius: '2px', padding: '2px 4px' } });
+    const viewMatrixBtn = h('button', {
+      style: { background: '#262626', border: '1px solid #434343', color: '#d9d9d9', borderRadius: '2px', padding: '3px 8px', cursor: 'pointer', fontSize: '12px' }
+    }, 'Xem Frame Này');
 
     // Filter Buttons
     const filterAll = h('button', { class: 'filter-btn active', onclick: () => setFilter('all') }, 'Tất cả');
@@ -109,9 +133,15 @@
 
       const { activeTracks, matrix } = SP.iou3d.computeFrameOverlapMatrix(store, frame);
 
-      if (activeTracks.length < 2) {
-        matrixContainerEl.append(h('div', { style: { padding: '40px', color: '#8b949e', textAlign: 'center' } },
-          `Frame ${frame} chỉ có ${activeTracks.length} vật thể, không có giao thoa trùng lặp.`
+      if (activeTracks.length === 0) {
+        matrixContainerEl.append(h('div', { style: { padding: '40px', color: '#8c8c8c', textAlign: 'center' } },
+          `Frame ${frame} chưa có vật thể nào xuất hiện.`
+        ));
+        return;
+      }
+      if (activeTracks.length === 1) {
+        matrixContainerEl.append(h('div', { style: { padding: '40px', color: '#8c8c8c', textAlign: 'center' } },
+          `Frame ${frame} chỉ có 1 vật thể (#${activeTracks[0].uiId} · ${activeTracks[0].labelName}), không có giao thoa trùng lặp.`
         ));
         return;
       }
@@ -166,8 +196,8 @@
       if (countEl) countEl.textContent = `Tìm thấy: ${filtered.length}/${allQAErrors.length} lỗi`;
 
       if (!filtered.length) {
-        alertListEl.append(h('div', { style: { padding: '40px', textAlign: 'center', color: '#3fb950' } },
-          allQAErrors.length ? 'Không có lỗi thuộc bộ lọc này.' : '🎉 Tuyệt vời! Chưa phát hiện lỗi hình học nào trên toàn Job.'
+        alertListEl.append(h('div', { style: { padding: '40px', textAlign: 'center', color: '#73d13d' } },
+          allQAErrors.length ? 'Không có lỗi thuộc bộ lọc này.' : 'Không phát hiện lỗi hình học nào trên toàn Job.'
         ));
         return;
       }
@@ -197,12 +227,12 @@
         }
 
         const jumpBtn = h('button', {
-          class: 'primary small',
+          style: { padding: '3px 8px', background: '#262626', border: '1px solid #434343', borderRadius: '2px', color: '#d9d9d9', cursor: 'pointer', fontSize: '11px' },
           onclick: () => {
             renderMatrix(item.frame);
             app.switchTab('case2', item.trackA ? item.trackA.id : item.track.id);
           }
-        }, '👉 Nhảy tới Frame');
+        }, 'Xem Frame');
 
         const card = h('div', { class: `alert-item ${item.type}` },
           h('div', {},
@@ -271,12 +301,13 @@
                 track: t,
                 frame: s2.frame,
                 speedPerFrame,
-                message: `Toạ độ nhảy vọt ${dist.toFixed(1)}m trong ${df} frame (~${Math.round(speedPerFrame * 10 * 3.6)} km/h)! Nghi ngờ AI gán nhầm xe.`,
+                message: `Vị trí dịch chuyển ${dist.toFixed(1)}m trong ${df} frame (~${Math.round(speedPerFrame * 10 * 3.6)} km/h) - Nghi ngờ gán nhầm đối tượng.`,
               });
             }
           }
         }
 
+        allQAErrors.sort((a, b) => a.frame - b.frame || ((a.trackA || a.track)?.uiId || 0) - ((b.trackA || b.track)?.uiId || 0));
         pBar.textContent = `Hoàn tất quét! Phát hiện tổng cộng ${allQAErrors.length} lỗi QA.`;
         renderAlerts();
         if (allQAErrors.length) {
@@ -297,11 +328,18 @@
 
     renderMatrix(currentFrame);
 
+    // Tự động nhận diện frame đang xem trên CVAT khi mở tab Case 3
+    SP.bridge.getActiveElement().then((act) => {
+      if (act && typeof act.frame === 'number' && act.frame !== currentFrame) {
+        renderMatrix(act.frame);
+      }
+    }).catch(() => {});
+
     return {
       refresh() { renderMatrix(currentFrame); },
       unmount() {}
     };
   }
 
-  (SP.pendingTabs ||= []).push(['case3', { title: 'Case 3 · Overlap & QA Inspector', mount }]);
+  (SP.pendingTabs ||= []).push(['case3', { title: 'Kiểm tra Overlap & QA', mount }]);
 })();

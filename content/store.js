@@ -7,13 +7,17 @@
 
   const deepClone = (v) => JSON.parse(JSON.stringify(v));
 
-  function findAngleDiff(rightAngle, leftAngle) {
-    let angleDiff = rightAngle - leftAngle;
-    angleDiff = ((angleDiff + 180) % 360) - 180;
-    if (Math.abs(angleDiff) >= 180) {
-      angleDiff = 360 - Math.abs(angleDiff) * Math.sign(angleDiff) * -1;
-    }
-    return angleDiff;
+  function normalizeAngleRad(angle) {
+    while (angle > Math.PI) angle -= 2 * Math.PI;
+    while (angle < -Math.PI) angle += 2 * Math.PI;
+    return angle;
+  }
+
+  function findAngleDiffRad(toAngle, fromAngle) {
+    let diff = (toAngle - fromAngle) % (2 * Math.PI);
+    if (diff > Math.PI) diff -= 2 * Math.PI;
+    if (diff < -Math.PI) diff += 2 * Math.PI;
+    return diff;
   }
 
   // Thuật toán nội suy chọn lọc (Selective Interpolation)
@@ -31,15 +35,13 @@
       }
     }
 
-    // 2. Nội suy góc quay (Euler XYZ, đặc biệt là góc Yaw trục Z)
+    // 2. Nội suy góc quay (Euler XYZ, đặc biệt là góc Yaw trục Z theo đường ngắn nhất)
     if (interpYaw) {
-      const angles = left.slice(3, 6).concat(right.slice(3, 6))
-        .map((a) => (a < 0 ? a + Math.PI * 2 : a))
-        .map((a) => a * (180 / Math.PI));
       for (let i = 0; i < 3; i++) {
-        let angle = (angles[i] + findAngleDiff(angles[i + 3], angles[i]) * offset) * (Math.PI / 180);
-        if (angle > Math.PI) angle -= Math.PI * 2;
-        out[3 + i] = angle;
+        const fromA = normalizeAngleRad(left[3 + i]);
+        const toA = normalizeAngleRad(right[3 + i]);
+        const diff = findAngleDiffRad(toA, fromA);
+        out[3 + i] = normalizeAngleRad(fromA + diff * offset);
       }
     }
 
@@ -68,6 +70,7 @@
     load(serverTrack) {
       this.server = deepClone(serverTrack);
       this.shapes = deepClone(serverTrack.shapes).sort((a, b) => a.frame - b.frame);
+      this.appliedShapes = deepClone(this.shapes);
       this.undoStack = [];
       this.redoStack = [];
       this.dirty = false;
@@ -181,9 +184,17 @@
       this.dirty = true;
     }
 
+    recordUndo() {
+      if (SP.app && typeof SP.app.snapshot === 'function') {
+        SP.app.snapshot([this.id]);
+      } else {
+        this.snapshot();
+      }
+    }
+
     // Tịnh tiến hàng loạt đa frame (Batch Shift)
     shiftBatch(frames, [dx, dy, dz], dYaw = 0) {
-      this.snapshot();
+      this.recordUndo();
       for (const f of frames) {
         const pos = this.at(f);
         if (!pos) continue;
@@ -201,7 +212,7 @@
 
     // Đảo chiều hướng đầu xe 180 độ tại các frames chỉ định
     flipHeadingBatch(frames) {
-      this.snapshot();
+      this.recordUndo();
       for (const f of frames) {
         const pos = this.at(f);
         if (!pos) continue;
@@ -214,7 +225,7 @@
 
     // Nội suy chọn lọc một dải frame từ fromFrame đến toFrame
     interpolateRange(fromFrame, toFrame, opts = {}) {
-      this.snapshot();
+      this.recordUndo();
       const minF = Math.min(fromFrame, toFrame);
       const maxF = Math.max(fromFrame, toFrame);
       if (minF >= maxF) return;
@@ -234,7 +245,7 @@
 
     // Xoá keyframe hàng loạt (để các frame này tự động nội suy)
     removeKeyframesBatch(frames) {
-      this.snapshot();
+      this.recordUndo();
       const frameSet = new Set(frames);
       const first = this.shapes[0]?.frame;
       this.shapes = this.shapes.filter((s) => !frameSet.has(s.frame) || s.frame === first);
@@ -243,7 +254,7 @@
 
     // Chốt keyframe hàng loạt (biến các frame nội suy thành keyframe cố định)
     createKeyframesBatch(frames) {
-      this.snapshot();
+      this.recordUndo();
       for (const f of frames) {
         const pos = this.at(f);
         if (pos && !pos.keyframe) {
@@ -255,9 +266,38 @@
 
     // Đặt trạng thái outside hàng loạt
     setOutsideBatch(frames, outside) {
-      this.snapshot();
+      this.recordUndo();
       for (const f of frames) {
         this.setOutside(f, outside);
+      }
+      this.dirty = true;
+    }
+
+    // Đồng bộ kích thước của 1 box sang tất cả các frame của track
+    syncSizeToAll(newSize) {
+      if (!newSize || newSize.length < 3) return;
+      this.recordUndo();
+      for (const sh of this.shapes) {
+        sh.points[6] = newSize[0];
+        sh.points[7] = newSize[1];
+        sh.points[8] = newSize[2];
+      }
+      this.dirty = true;
+    }
+
+    // Áp dụng kích thước của profile cho danh sách frames, tự động neo đáy tiếp xúc mặt đất
+    applyProfile(frames, targetSize) {
+      if (!targetSize || targetSize.length < 3) return;
+      this.recordUndo();
+      const [newL, newW, newH] = targetSize;
+      for (const f of frames) {
+        const pos = this.at(f);
+        if (!pos) continue;
+        const b = G.cloneBox(pos.box);
+        const oldH = b.s[2];
+        b.c[2] += (newH - oldH) / 2; // Giữ nguyên đáy tiếp xúc đất
+        b.s = [newL, newW, newH];
+        this.setBox(f, b);
       }
       this.dirty = true;
     }
@@ -269,6 +309,115 @@
     }
   }
 
+  // Quản lý các cấu hình kích thước đặt tên (Named Size Profiles) lưu trữ qua Side-Channel (localStorage)
+  // Đảm bảo TUYỆT ĐỐI không chèn thuộc tính lạ vào shapes hay server format của CVAT
+  class ProfileManager {
+    constructor(jid) {
+      this.jid = jid;
+      this.storageKey = `cvat_super_pro_profiles_jid_${jid}`;
+      this.data = this.load();
+    }
+
+    load() {
+      try {
+        const raw = localStorage.getItem(this.storageKey);
+        return raw ? JSON.parse(raw) : { tracks: {} };
+      } catch {
+        return { tracks: {} };
+      }
+    }
+
+    save() {
+      try {
+        localStorage.setItem(this.storageKey, JSON.stringify(this.data));
+      } catch (e) {
+        console.warn('[CVAT Super Pro] Lưu Profile thất bại:', e);
+      }
+    }
+
+    getTrackData(trackId) {
+      this.data.tracks ||= {};
+      const tid = String(trackId);
+      this.data.tracks[tid] ||= { profiles: {}, assignments: {} };
+      return this.data.tracks[tid];
+    }
+
+    getProfiles(trackId) {
+      const td = this.getTrackData(trackId);
+      return Object.values(td.profiles);
+    }
+
+    getProfile(trackId, profileId) {
+      const td = this.getTrackData(trackId);
+      return td.profiles[profileId] || null;
+    }
+
+    createProfile(trackId, name, size, color = null) {
+      const td = this.getTrackData(trackId);
+      const id = 'prof_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+      const palette = ['#58a6ff', '#bc8cff', '#3fb950', '#f0883e', '#d29922', '#f778ba', '#39c5bb'];
+      const chosenColor = color || palette[Object.keys(td.profiles).length % palette.length];
+      const profile = {
+        id,
+        name: name || `Cấu hình ${Object.keys(td.profiles).length + 1}`,
+        size: [Number(size[0].toFixed(3)), Number(size[1].toFixed(3)), Number(size[2].toFixed(3))],
+        color: chosenColor,
+      };
+      td.profiles[id] = profile;
+      this.save();
+      return profile;
+    }
+
+    updateProfile(trackId, profileId, updates) {
+      const td = this.getTrackData(trackId);
+      if (!td.profiles[profileId]) return null;
+      Object.assign(td.profiles[profileId], updates);
+      this.save();
+      return td.profiles[profileId];
+    }
+
+    deleteProfile(trackId, profileId) {
+      const td = this.getTrackData(trackId);
+      delete td.profiles[profileId];
+      for (const [frame, pid] of Object.entries(td.assignments)) {
+        if (pid === profileId) delete td.assignments[frame];
+      }
+      this.save();
+    }
+
+    getFrameProfileId(trackId, frame) {
+      const td = this.getTrackData(trackId);
+      return td.assignments[String(frame)] || null;
+    }
+
+    getFrameProfile(trackId, frame) {
+      const pid = this.getFrameProfileId(trackId, frame);
+      return pid ? this.getProfile(trackId, pid) : null;
+    }
+
+    assignFrames(trackId, frames, profileId) {
+      const td = this.getTrackData(trackId);
+      for (const f of frames) {
+        const k = String(f);
+        if (profileId) {
+          td.assignments[k] = profileId;
+        } else {
+          delete td.assignments[k];
+        }
+      }
+      this.save();
+    }
+
+    getFramesWithProfile(trackId, profileId) {
+      const td = this.getTrackData(trackId);
+      const out = [];
+      for (const [frame, pid] of Object.entries(td.assignments)) {
+        if (pid === profileId) out.push(Number(frame));
+      }
+      return out.sort((a, b) => a - b);
+    }
+  }
+
   class JobStore {
     constructor(jid) {
       this.jid = jid;
@@ -277,6 +426,7 @@
       this.labels = new Map();
       this.frames = [];
       this.mode = 'live';
+      this.profileManager = new ProfileManager(jid);
     }
 
     on(cb) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
@@ -301,9 +451,43 @@
 
     setLiveTracks(list) {
       this.tracks = new Map();
-      for (const t of list) {
+      // Luôn sắp xếp theo clientID tăng dần để đồng bộ 100% với thứ tự CVAT UI & tool QA/QC
+      const sorted = (list || []).slice().sort((a, b) => a.clientID - b.clientID);
+      for (const t of sorted) {
         const serverTrack = { id: t.serverID, label_id: t.labelId, frame: t.shapes[0].frame, shapes: t.shapes };
         this.tracks.set(t.clientID, new TrackState(serverTrack, t.clientID, t.clientID));
+      }
+    }
+
+    // Đồng bộ ngược lại từ RAM của CVAT vào Store (khi người dùng vừa chỉnh sửa trực tiếp trên CVAT gốc)
+    async syncFromCvat() {
+      if (!this.frames || !this.frames.length) return false;
+      try {
+        const liveTracks = await SP.bridge.call('readTracks', { frames: this.frames });
+        if (!Array.isArray(liveTracks)) return false;
+        const sorted = liveTracks.slice().sort((a, b) => a.clientID - b.clientID);
+        const seen = new Set();
+        for (const t of sorted) {
+          seen.add(t.clientID);
+          const existing = this.tracks.get(t.clientID);
+          if (!existing) {
+            const serverTrack = { id: t.serverID, label_id: t.labelId, frame: t.shapes[0].frame, shapes: t.shapes };
+            this.tracks.set(t.clientID, new TrackState(serverTrack, t.clientID, t.clientID));
+          } else {
+            const newShapes = deepClone(t.shapes).sort((a, b) => a.frame - b.frame);
+            if (JSON.stringify(existing.shapes) !== JSON.stringify(newShapes)) {
+              existing.shapes = newShapes;
+              existing.appliedShapes = deepClone(newShapes);
+            }
+          }
+        }
+        for (const k of this.tracks.keys()) {
+          if (!seen.has(k)) this.tracks.delete(k);
+        }
+        return true;
+      } catch (err) {
+        console.warn('[CVAT Super Pro] Không thể đồng bộ ngược từ CVAT RAM:', err);
+        return false;
       }
     }
 
@@ -319,10 +503,33 @@
       return out;
     }
 
-    track(id) { return this.tracks.get(id); }
+    // Tra cứu track linh hoạt: hỗ trợ cả clientID (giao diện) lẫn serverId (database của CVAT)
+    track(id) {
+      const num = Number(id);
+      return this.tracks.get(num) || [...this.tracks.values()].find((t) => t.serverId === num) || null;
+    }
     labelName(labelId) { return this.labels.get(labelId)?.name ?? `label ${labelId}`; }
     labelColor(labelId) { return this.labels.get(labelId)?.color || '#5ad17a'; }
     dirtyTracks() { return [...this.tracks.values()].filter((t) => t.dirty); }
+
+    // Đồng bộ tức thời toạ độ track vào RAM của CVAT và ép 3D canvas vẽ lại ngay lập tức
+    async syncTrackToCvat(track) {
+      if (!track) return;
+      try {
+        const current = track.appliedShapes || track.serverShapesSorted();
+        const res = await SP.bridge.call('applyTrack', {
+          clientID: track.key,
+          shapes: track.shapes,
+          current,
+        });
+        track.appliedShapes = deepClone(track.shapes);
+        await SP.bridge.call('refresh');
+        this.emit('synced', { trackId: track.id, changed: res?.changed });
+        return res;
+      } catch (err) {
+        console.warn('[CVAT Super Pro] Đồng bộ tức thời sang CVAT RAM thất bại:', err);
+      }
+    }
 
     // Lưu các track đã sửa thẳng vào RAM của CVAT qua ObjectState và kích hoạt nút Save gốc
     async save() {
@@ -331,12 +538,14 @@
 
       let changed = 0;
       for (const t of dirty) {
+        const current = t.appliedShapes || t.serverShapesSorted();
         const res = await SP.bridge.call('applyTrack', {
           clientID: t.key,
           shapes: t.shapes,
-          current: t.serverShapesSorted(),
+          current,
         });
-        changed += res.changed;
+        t.appliedShapes = deepClone(t.shapes);
+        changed += (res?.changed || 0);
       }
 
       // Kích hoạt lưu chính thức của CVAT
@@ -351,6 +560,7 @@
         t.load({ ...t.server, id: f.serverID, shapes: f.shapes });
         t.undoStack = undo;
         t.redoStack = redo;
+        t.appliedShapes = deepClone(f.shapes);
       }
 
       this.emit('saved');
@@ -359,5 +569,6 @@
   }
 
   SP.JobStore = JobStore;
-  SP.store = { interpolatePointsSelective, findAngleDiff, deepClone };
+  SP.ProfileManager = ProfileManager;
+  SP.store = { interpolatePointsSelective, findAngleDiff: findAngleDiffRad, findAngleDiffRad, normalizeAngleRad, deepClone };
 })();

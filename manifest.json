@@ -16,7 +16,8 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "CVAT 3D Super Pro (Bấm để bật trên tab hiện tại)"
+    "default_title": "CVAT 3D Super Pro (Bấm để bật trên tab hiện tại)",
+    "default_popup": "popup.html"
   },
   "options_ui": {
     "page": "options.html",

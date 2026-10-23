@@ -48,5 +48,33 @@
         return false;
       }
     },
+
+    getActiveElement() {
+      return this.call('getActiveElement', {}, 2000).catch(() => null);
+    },
+
+    activateObject(clientID) {
+      return this.call('activateObject', { clientID }, 2000).catch(() => false);
+    },
+
+    changeFrame(frame) {
+      return this.call('changeFrame', { frame }, 4000).catch(() => false);
+    },
+
+    flipActiveHeading(clientID, frame, allFrames = false) {
+      return this.call('flipActiveHeading', { clientID, frame, allFrames }, 4000);
+    },
+
+    snapActiveGround(clientID, frame, offsetZ) {
+      return this.call('snapActiveGround', { clientID, frame, offsetZ }, 4000);
+    },
+
+    showGhostInMainScene(ghosts) {
+      return this.call('showGhostInMainScene', { ghosts }, 4000).catch(() => false);
+    },
+
+    hideGhostInMainScene() {
+      return this.call('hideGhostInMainScene', {}, 4000).catch(() => false);
+    },
   };
 })();

@@ -18,6 +18,16 @@
   function mount(app, root) {
     const { h, fmt } = SP.ui;
     const store = app.store;
+    if (!store || !store.meta || !store.frames?.length) {
+      root.append(h('div', { class: 'bar', style: { color: '#8c8c8c', padding: '12px' } },
+        'Đang kết nối và tải dữ liệu từ CVAT, vui lòng chờ trong giây lát…'
+      ));
+      const off = store ? store.on('load', () => {
+        off();
+        if (app.activeTab === 'case1') app.switchTab('case1');
+      }) : () => {};
+      return { refresh() {}, unmount() { off(); } };
+    }
     const frames = store.frames;
     const range = { from: frames[0], to: frames[frames.length - 1] };
     const inputs = new Map();
@@ -28,29 +38,31 @@
       onchange: () => { range.from = Number(fromIn.value); } });
     const toIn = h('input', { type: 'number', value: range.to, min: frames[0], max: frames[frames.length - 1],
       onchange: () => { range.to = Number(toIn.value); } });
-    const progress = h('span', { class: 'status' });
+    const progress = h('span', { class: 'status', style: { color: '#40a9ff', fontSize: '12px' } });
 
     const tbody = h('tbody');
-    const table = h('table', { style: { width: '100%', borderCollapse: 'collapse', textAlign: 'left' } },
-      h('thead', { style: { background: '#161b22', borderBottom: '1px solid #30363d' } },
+    const table = h('table', { style: { width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' } },
+      h('thead', { style: { background: '#1f1f1f', borderBottom: '1px solid #303030', position: 'sticky', top: '0', zIndex: '1' } },
         h('tr', {},
-          ['ID', 'Nhãn', 'Dải Frame', 'Keyframes', 'L/W/H Trung vị', 'L mới', 'W mới', 'H mới', 'Lấy mẫu từ', 'Thao tác'].map((t) =>
-            h('th', { style: { padding: '8px 10px', fontSize: '12px', color: '#8b949e' } }, t))
+          ['ID', 'Nhãn (Label)', 'Dải Frame', 'Keyframes', 'L / W / H Trung vị', 'L mới', 'W mới', 'H mới', 'Lấy mẫu từ Frame', 'Thao tác'].map((t) =>
+            h('th', { style: { padding: '8px 10px', fontSize: '11px', fontWeight: '600', color: '#8c8c8c', textTransform: 'uppercase', letterSpacing: '0.3px' } }, t))
         )
       ),
       tbody
     );
 
     root.append(
-      h('div', { class: 'bar', style: { gap: '12px' } },
-        h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, 'Chế độ đổi kích thước:', modeSel),
-        h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, 'Áp dụng từ frame:', fromIn, '→', toIn),
+      h('div', { class: 'bar', style: { gap: '10px' } },
+        h('label', {}, 'Chế độ chuẩn hóa:', modeSel),
+        h('span', { class: 'divider' }),
+        h('label', {}, 'Phạm vi frame:', fromIn, '→', toIn),
+        h('span', { class: 'divider' }),
+        h('span', { style: { color: '#8c8c8c', fontSize: '12px' } },
+          'Mẹo: Chọn "Giữ đáy box cố định" để khi đổi chiều cao H bánh xe vẫn chạm sát mặt đường.'
+        ),
         progress
       ),
-      h('div', { style: { padding: '6px 12px', background: '#161b22', borderBottom: '1px solid #30363d', fontSize: '12px', color: '#8b949e' } },
-        '💡 Mẹo: Chọn "Giữ đáy box" để khi đổi chiều cao H bánh xe vẫn chạm sát mặt đường. Mọi thay đổi lưu vào RAM CVAT và lưu bằng nút Save gốc.'
-      ),
-      h('div', { style: { flex: 1, overflow: 'auto', padding: '10px' } }, table)
+      h('div', { style: { flex: 1, overflow: 'auto', padding: '8px 12px' } }, table)
     );
 
     function inRange(f) {
@@ -66,7 +78,8 @@
           (p) => { progress.textContent = `Tải point cloud ${Math.round(p.fraction * 100)}%…`; });
       }
 
-      track.snapshot();
+      if (app.snapshot) app.snapshot([track.id]);
+      else track.snapshot();
       let failed = 0;
       for (const shape of keyframes) {
         const box = SP.geom.pointsToBox(shape.points);
@@ -86,15 +99,17 @@
       }
       track.dirty = true;
       progress.textContent = '';
-      app.setStatus(`ID #${track.uiId}: Đã đồng bộ kích thước cho ${keyframes.length} keyframes`, failed ? 'err' : 'ok');
       app.changed();
+      await store.syncTrackToCvat(track);
+      app.setStatus(`ID #${track.uiId}: Đã đồng bộ kích thước & cập nhật trực tiếp lên CVAT`, failed ? 'err' : 'ok');
     }
 
     async function snapOnly(track) {
       const keyframes = track.shapes.filter((s) => inRange(s.frame) && !s.outside);
       progress.textContent = 'Đang tải dữ liệu point cloud…';
       await app.getFrames().preload(keyframes.map((s) => s.frame));
-      track.snapshot();
+      if (app.snapshot) app.snapshot([track.id]);
+      else track.snapshot();
       let failed = 0;
       for (const shape of keyframes) {
         const cloud = await app.getFrames().cloud(shape.frame);
@@ -104,8 +119,9 @@
       }
       track.dirty = true;
       progress.textContent = '';
-      app.setStatus(`ID #${track.uiId}: Đã hút đáy chạm đất ${keyframes.length - failed} keyframes`, failed ? 'err' : 'ok');
       app.changed();
+      await store.syncTrackToCvat(track);
+      app.setStatus(`ID #${track.uiId}: Đã hút đáy chạm đất & cập nhật trực tiếp lên CVAT`, failed ? 'err' : 'ok');
     }
 
     function render() {
@@ -139,13 +155,14 @@
         });
 
         const pickBtn = h('button', {
+          title: 'Lấy kích thước L/W/H từ frame này làm mẫu',
           onclick: () => {
             const pos = t.at(Number(fromFrame.value));
             if (!pos) return;
             [state.L, state.W, state.H] = pos.box.s.map((v) => v.toFixed(3));
             L.value = state.L; W.value = state.W; H.value = state.H;
           }
-        }, '⤵ Lấy');
+        }, 'Lấy mẫu');
 
         const applyBtn = h('button', {
           class: 'primary',
@@ -160,24 +177,28 @@
         const snapBtn = h('button', {
           onclick: () => snapOnly(t).catch((err) => app.setStatus(`Lỗi: ${err.message}`, 'err')),
           title: 'Hút đáy box xuống mặt đất theo LiDAR'
-        }, '⇩ Chạm đất');
+        }, 'Hút đất');
 
-        const openC2Btn = h('button', { onclick: () => app.switchTab('case2', t.id) }, 'Mở Case 2 →');
+        const openC2Btn = h('button', { onclick: () => app.switchTab('case2', t.id) }, 'Sửa chuỗi →');
 
-        tbody.append(h('tr', { style: { borderBottom: '1px solid #21262d' } },
-          h('td', { style: { padding: '8px 10px', fontWeight: 600 } }, `#${t.uiId}`),
-          h('td', { style: { padding: '8px 10px', color: store.labelColor(t.labelId) } }, store.labelName(t.labelId)),
-          h('td', { style: { padding: '8px 10px' } }, `f${t.firstFrame} → f${t.lastFrame}`),
-          h('td', { style: { padding: '8px 10px' } }, String(t.shapes.length)),
-          h('td', { style: { padding: '8px 10px' } },
-            med.map((v) => fmt(v)).join(' / '),
-            varies ? h('span', { style: { marginLeft: '6px', color: '#e3b341', fontSize: '11px', background: '#3b2300', padding: '1px 5px', borderRadius: '4px' } }, '⚠️ lệch') : null
+        tbody.append(h('tr', {
+          style: { borderBottom: '1px solid #262626', transition: 'background 0.1s' },
+          onmouseenter: (e) => { e.currentTarget.style.background = '#1f1f1f'; },
+          onmouseleave: (e) => { e.currentTarget.style.background = 'transparent'; },
+        },
+          h('td', { style: { padding: '7px 10px', fontWeight: 600, color: '#fff' } }, `#${t.uiId}`),
+          h('td', { style: { padding: '7px 10px', color: store.labelColor(t.labelId), fontWeight: 500 } }, store.labelName(t.labelId)),
+          h('td', { style: { padding: '7px 10px', fontVariantNumeric: 'tabular-nums', color: '#bfbfbf' } }, `f${t.firstFrame} → f${t.lastFrame}`),
+          h('td', { style: { padding: '7px 10px', fontVariantNumeric: 'tabular-nums' } }, String(t.shapes.length)),
+          h('td', { style: { padding: '7px 10px', fontVariantNumeric: 'tabular-nums' } },
+            med.map((v) => fmt(v)).join(' × '),
+            varies ? h('span', { style: { marginLeft: '6px', color: '#faad14', fontSize: '10px', background: 'rgba(250, 173, 20, 0.12)', border: '1px solid rgba(250, 173, 20, 0.4)', padding: '1px 5px', borderRadius: '2px' } }, 'Biến thiên') : null
           ),
-          h('td', { style: { padding: '8px 10px' } }, L),
-          h('td', { style: { padding: '8px 10px' } }, W),
-          h('td', { style: { padding: '8px 10px' } }, H),
-          h('td', { style: { padding: '8px 10px' } }, fromFrame, ' ', pickBtn),
-          h('td', { style: { padding: '8px 10px', display: 'flex', gap: '4px' } }, applyBtn, snapBtn, openC2Btn),
+          h('td', { style: { padding: '7px 10px' } }, L),
+          h('td', { style: { padding: '7px 10px' } }, W),
+          h('td', { style: { padding: '7px 10px' } }, H),
+          h('td', { style: { padding: '7px 10px', display: 'flex', alignItems: 'center', gap: '4px' } }, fromFrame, pickBtn),
+          h('td', { style: { padding: '7px 10px' } }, h('div', { style: { display: 'flex', gap: '4px' } }, applyBtn, snapBtn, openC2Btn)),
         ));
       }
     }
@@ -186,5 +207,5 @@
     return { refresh: render, unmount() {} };
   }
 
-  (SP.pendingTabs ||= []).push(['case1', { title: 'Case 1 · Sửa L/W/H', mount }]);
+  (SP.pendingTabs ||= []).push(['case1', { title: 'Chuẩn hóa Size L/W/H', mount }]);
 })();

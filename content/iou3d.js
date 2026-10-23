@@ -147,7 +147,7 @@
         if (distSq > (maxDimA + maxDimB) ** 2) continue; // Ở quá xa, không thể giao nhau
 
         // Tính toán chi tiết
-        const res = compute3DIoU(a.box.c ? a.box : a.box, b.box);
+        const res = compute3DIoU(a.box, b.box);
         if (res.iou >= threshold || res.maxOverlapRatio >= threshold) {
           overlaps.push({
             frame,
@@ -197,6 +197,8 @@
         active.push({ id: t.id, uiId: t.uiId, labelName: store.labelName(t.labelId), color: store.labelColor(t.labelId), box: pos.box });
       }
     }
+    // Sắp xếp active tracks theo uiId tăng dần đồng bộ tuyệt đối với CVAT UI
+    active.sort((a, b) => a.uiId - b.uiId);
 
     const n = active.length;
     const matrix = Array.from({ length: n }, () => new Float32Array(n));
@@ -221,12 +223,52 @@
     };
   }
 
+  // Tìm các track bị trùng lặp với 1 track cụ thể tại 1 frame (Độ phức tạp O(N) thay vì O(N^2))
+  function findTrackOverlapsAtFrame(store, trackId, frame, threshold = 0.25) {
+    const targetTrack = store?.track?.(trackId);
+    if (!targetTrack) return [];
+    const posA = targetTrack.at(frame);
+    if (!posA || posA.outside) return [];
+
+    const boxA = posA.box;
+    const maxDimA = Math.hypot(boxA.s[0], boxA.s[1], boxA.s[2]) / 2;
+    const overlaps = [];
+
+    for (const t of store.tracks.values()) {
+      if (t.id === targetTrack.id) continue;
+      const posB = t.at(frame);
+      if (!posB || posB.outside) continue;
+
+      const boxB = posB.box;
+      const distSq = (boxA.c[0] - boxB.c[0]) ** 2 + (boxA.c[1] - boxB.c[1]) ** 2 + (boxA.c[2] - boxB.c[2]) ** 2;
+      const maxDimB = Math.hypot(boxB.s[0], boxB.s[1], boxB.s[2]) / 2;
+      if (distSq > (maxDimA + maxDimB) ** 2) continue;
+
+      const res = compute3DIoU(boxA, boxB);
+      if (res.iou >= threshold || res.maxOverlapRatio >= threshold) {
+        overlaps.push({
+          frame,
+          trackA: targetTrack,
+          trackB: t,
+          boxA,
+          boxB,
+          iou: res.iou,
+          maxOverlapRatio: res.maxOverlapRatio,
+          ratioA: res.ratioA,
+          ratioB: res.ratioB,
+        });
+      }
+    }
+    return overlaps;
+  }
+
   SP.iou3d = {
     getBox2DVertices,
     polygonArea,
     clipPolygon,
     compute3DIoU,
     findFrameOverlaps,
+    findTrackOverlapsAtFrame,
     scanAllJobOverlaps,
     computeFrameOverlapMatrix,
   };
