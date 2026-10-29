@@ -15,6 +15,59 @@
     return s.length ? s[Math.floor(s.length / 2)] : NaN;
   }
 
+  // Thuật toán quét và gom cụm các dải frame liên tiếp có cùng kích thước
+  function computeSizeSegments(track) {
+    if (!track || !track.shapes || !track.shapes.length) return [];
+    const segments = [];
+    let currentSeg = null;
+
+    for (const shape of track.shapes) {
+      if (shape.outside) continue;
+      const size = [shape.points[6], shape.points[7], shape.points[8]];
+      if (!currentSeg) {
+        currentSeg = {
+          startFrame: shape.frame,
+          endFrame: shape.frame,
+          count: 1,
+          size: size.slice(),
+          keyframes: [shape.frame]
+        };
+      } else {
+        const isSame = [0, 1, 2].every((i) => Math.abs(size[i] - currentSeg.size[i]) <= 0.008);
+        if (isSame) {
+          currentSeg.endFrame = shape.frame;
+          currentSeg.count++;
+          currentSeg.keyframes.push(shape.frame);
+        } else {
+          segments.push(currentSeg);
+          currentSeg = {
+            startFrame: shape.frame,
+            endFrame: shape.frame,
+            count: 1,
+            size: size.slice(),
+            keyframes: [shape.frame]
+          };
+        }
+      }
+    }
+    if (currentSeg) segments.push(currentSeg);
+
+    const totalCount = segments.reduce((acc, s) => acc + s.count, 0);
+    let maxCount = -1;
+    let majorityIdx = -1;
+    segments.forEach((seg, idx) => {
+      seg.percent = totalCount > 0 ? Math.round((seg.count / totalCount) * 100) : 0;
+      if (seg.count > maxCount) {
+        maxCount = seg.count;
+        majorityIdx = idx;
+      }
+    });
+    if (majorityIdx >= 0) {
+      segments[majorityIdx].isMajority = true;
+    }
+    return segments;
+  }
+
   function mount(app, root) {
     const { h, fmt } = SP.ui;
     const store = app.store;
@@ -24,7 +77,7 @@
       ));
       const off = store ? store.on('load', () => {
         off();
-        if (app.activeTab === 'case1') app.switchTab('case1');
+        if (app.currentTab === 'case1') app.switchTab('case1');
       }) : () => {};
       return { refresh() {}, unmount() { off(); } };
     }
@@ -124,6 +177,121 @@
       app.setStatus(`ID #${track.uiId}: Đã hút đáy chạm đất & cập nhật trực tiếp lên CVAT`, failed ? 'err' : 'ok');
     }
 
+    function openSizeBreakdownModal(track, segments, onPick, onApplyMajority) {
+      const overlay = h('div', {
+        style: {
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)',
+          backdropFilter: 'blur(3px)', zIndex: 2147483020,
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }
+      });
+
+      const modalClose = () => {
+        overlay.remove();
+        if (app.modalStack) {
+          const idx = app.modalStack.indexOf(modalClose);
+          if (idx >= 0) app.modalStack.splice(idx, 1);
+        }
+      };
+      if (app.modalStack) app.modalStack.push(modalClose);
+
+      const title = h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', borderBottom: '1px solid #303030', paddingBottom: '8px' } },
+        h('span', { style: { color: '#fff', fontSize: '13px', fontWeight: 600 } }, `Phân đoạn biến thiên kích thước · Track #${track.uiId}`),
+        h('button', {
+          style: { background: 'transparent', border: 0, color: '#8c8c8c', cursor: 'pointer', padding: '0 4px', display: 'inline-flex', alignItems: 'center' },
+          title: 'Đóng', onclick: modalClose
+        }, SP.icons.close(14))
+      );
+
+      const majoritySeg = segments.find((s) => s.isMajority) || segments[0];
+
+      const rowsEl = segments.map((seg, idx) => {
+        const isMaj = !!seg.isMajority;
+        const diffL = seg.size[0] - majoritySeg.size[0];
+        const diffW = seg.size[1] - majoritySeg.size[1];
+        const diffH = seg.size[2] - majoritySeg.size[2];
+
+        const pickThisBtn = h('button', {
+          class: 'small',
+          style: { padding: '2px 8px', fontSize: '11px' },
+          onclick: () => {
+            onPick(seg.size);
+            modalClose();
+            app.setStatus(`Đã chọn kích thước đoạn f${seg.startFrame}→f${seg.endFrame} cho Track #${track.uiId}`, 'ok');
+          }
+        }, 'Lấy mẫu này');
+
+        const jumpBtn = h('button', {
+          class: 'small',
+          style: { padding: '2px 6px', fontSize: '11px', color: '#8c8c8c' },
+          title: `Nhảy tới Frame ${seg.startFrame} trên CVAT`,
+          onclick: () => {
+            SP.bridge.changeFrame(seg.startFrame);
+          }
+        }, `Nhảy f${seg.startFrame}`);
+
+        return h('div', {
+          style: {
+            background: isMaj ? 'rgba(82, 196, 26, 0.08)' : '#141414',
+            border: isMaj ? '1px solid #274916' : '1px solid #262626',
+            borderRadius: '3px',
+            padding: '8px 10px',
+            marginBottom: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between'
+          }
+        },
+          h('div', {},
+            h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '3px' } },
+              h('span', { style: { fontWeight: 600, color: '#fff', fontSize: '12px' } }, `Đoạn ${idx + 1}: f${seg.startFrame} → f${seg.endFrame}`),
+              h('span', { style: { fontSize: '11px', color: '#8c8c8c' } }, `(${seg.count} keyframes · ${seg.percent}%)`),
+              isMaj
+                ? h('span', { style: { color: '#52c41a', background: 'rgba(82,196,26,0.15)', border: '1px solid rgba(82,196,26,0.3)', padding: '0 5px', borderRadius: '2px', fontSize: '10px', fontWeight: 600 } }, 'ĐA SỐ · KHUYÊN DÙNG')
+                : h('span', { style: { color: '#faad14', fontSize: '10px' } }, `Lệch: ${diffL >= 0 ? '+' : ''}${diffL.toFixed(2)}m / ${diffW >= 0 ? '+' : ''}${diffW.toFixed(2)}m / ${diffH >= 0 ? '+' : ''}${diffH.toFixed(2)}m`)
+            ),
+            h('div', { style: { fontFamily: 'monospace', fontSize: '11px', color: '#bfbfbf' } },
+              `Kích thước: ${seg.size[0].toFixed(3)} × ${seg.size[1].toFixed(3)} × ${seg.size[2].toFixed(3)} m (D × R × C)`
+            )
+          ),
+          h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+            jumpBtn,
+            pickThisBtn
+          )
+        );
+      });
+
+      const applyMajBtn = h('button', {
+        class: 'primary',
+        style: { padding: '6px 14px', fontSize: '12px' },
+        onclick: async () => {
+          modalClose();
+          await onApplyMajority(majoritySeg.size);
+        }
+      }, `Đồng bộ toàn bộ Track về kích thước Đa số (${majoritySeg.size.map(v => v.toFixed(2)).join('×')}m)`);
+
+      const modal = h('div', {
+        style: {
+          width: '560px', maxWidth: '95vw', background: '#1f1f1f', border: '1px solid #303030',
+          borderRadius: '4px', padding: '16px', boxShadow: '0 8px 24px rgba(0,0,0,0.55)'
+        }
+      },
+        title,
+        h('div', { style: { fontSize: '12px', color: '#8c8c8c', marginBottom: '12px' } },
+          `Track #${track.uiId} phát hiện có ${segments.length} phân đoạn kích thước khác nhau. Chi tiết các dải frame:`
+        ),
+        h('div', { style: { maxHeight: '320px', overflowY: 'auto', marginBottom: '14px' } }, rowsEl),
+        h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px', borderTop: '1px solid #303030', paddingTop: '12px' } },
+          h('button', { style: { padding: '6px 12px', fontSize: '12px' }, onclick: modalClose }, 'Đóng (Esc)'),
+          applyMajBtn
+        )
+      );
+
+      overlay.onclick = (e) => { if (e.target === overlay) modalClose(); };
+      overlay.append(modal);
+      root.append(overlay);
+    }
+
     function render() {
       tbody.replaceChildren();
       const tracks = [...store.tracks.values()].sort((a, b) => a.uiId - b.uiId);
@@ -192,7 +360,32 @@
           h('td', { style: { padding: '7px 10px', fontVariantNumeric: 'tabular-nums' } }, String(t.shapes.length)),
           h('td', { style: { padding: '7px 10px', fontVariantNumeric: 'tabular-nums' } },
             med.map((v) => fmt(v)).join(' × '),
-            varies ? h('span', { style: { marginLeft: '6px', color: '#faad14', fontSize: '10px', background: 'rgba(250, 173, 20, 0.12)', border: '1px solid rgba(250, 173, 20, 0.4)', padding: '1px 5px', borderRadius: '2px' } }, 'Biến thiên') : null
+            varies ? h('button', {
+              class: 'small',
+              style: {
+                marginLeft: '6px',
+                color: '#faad14',
+                fontSize: '10px',
+                background: 'rgba(250, 173, 20, 0.12)',
+                border: '1px solid rgba(250, 173, 20, 0.4)',
+                padding: '1px 5px',
+                borderRadius: '2px',
+                cursor: 'pointer'
+              },
+              title: 'Bấm để xem chi tiết từ frame nào đến frame nào có kích thước A, B và đồng bộ 1-click',
+              onclick: () => {
+                const segs = computeSizeSegments(t);
+                openSizeBreakdownModal(t, segs, (pickedSize) => {
+                  [state.L, state.W, state.H] = pickedSize.map((v) => v.toFixed(3));
+                  L.value = state.L; W.value = state.W; H.value = state.H;
+                }, async (majoritySize) => {
+                  [state.L, state.W, state.H] = majoritySize.map((v) => v.toFixed(3));
+                  L.value = state.L; W.value = state.W; H.value = state.H;
+                  applyBtn.disabled = true;
+                  try { await apply(t, majoritySize); } finally { applyBtn.disabled = false; }
+                });
+              }
+            }, 'Biến thiên ℹ') : null
           ),
           h('td', { style: { padding: '7px 10px' } }, L),
           h('td', { style: { padding: '7px 10px' } }, W),

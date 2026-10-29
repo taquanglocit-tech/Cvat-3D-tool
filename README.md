@@ -16,28 +16,29 @@
   - Tự động nhận diện URL CVAT hiện tại.
   - Bấm nút "Kích hoạt trên domain này" là extension tự cấp quyền và tiêm script ngay lập tức mà không cần mở tab Cài đặt rườm rà.
 
-### 2. Menu Ngữ cảnh Chuột phải Trực tiếp (Native Context Menu Hook)
-- Nhấp chuột phải trực tiếp vào **Box 3D trên màn hình** hoặc vào **dòng Track trên Sidebar CVAT**:
-  - `Sửa chuỗi frame (Mở Drawer)`
+### 2. Tích hợp Menu 3 Chấm (⋯) của Cuboid trên Sidebar CVAT & HUD
+- Bấm vào nút **3 chấm (`⋯`)** trên dòng Track ở Sidebar CVAT hoặc trên thanh Mini-HUD:
+  - `Sửa chuỗi frame (Mở Drawer)` [Phím `Alt + Space`]
+  - `Chuẩn hóa Size L/W/H`
   - `Đảo đầu 180° (Frame này)` [Phím `F`]
   - `Đảo đầu 180° (Toàn bộ track)` [Phím `Shift + F`]
   - `Hút đáy sát mặt đất (Snap Ground)` [Phím `G`]
-  - `Kiểm tra va chạm & QA`
+  - `Kiểm tra va chạm Overlap`
   - `Bảng phím tắt CAD` [Phím `?`]
 
 ### 3. Thanh Công cụ Nổi Mini (Floating Mini-HUD) trên Khung nhìn 3D
 - Xuất hiện bán trong suốt ở góc trên màn hình 3D khi bạn chọn một cuboid:
   - Hiển thị nhãn và Track ID.
   - **Đếm điểm LiDAR thời gian thực:** Hiển thị số lượng điểm bên trong box (ví dụ `142 pts`). Nếu vô tình kéo box ra khoảng trống không có điểm nào (`0 pts`), huy hiệu chuyển màu đỏ/vàng cảnh báo "Box rỗng!" ngay lập tức.
-  - Các nút thao tác nhanh: `[180°]`, `[Hút đất]`, `[Khóa kích thước]`, `[Sửa chuỗi]`.
+  - Các nút thao tác nhanh: `[180°]`, `[Hút đất]`, `[Khóa size]`, `[Soi vệt]`, `[Profile]`, `[Sửa chuỗi]`.
 
 ### 4. Vệt Quỹ đạo Chuyển động & Biểu đồ Vận tốc Mini (Speed Sparkline)
 - **Đồ thị sóng vận tốc tích hợp ngay trên Drawer:**
   - Tính toán quãng đường di chuyển $\Delta d$ giữa các frame của xe.
   - Đánh dấu chấm đỏ neon cảnh báo những frame có hiện tượng nhảy cóc tốc độ bất thường (> 3m/frame).
   - Bấm chuột vào bất kỳ điểm nào trên đồ thị -> CVAT tự động nhảy ngay đến frame đó.
-- **Giữ phím `H` (Hold to Peek Ghost Frames):**
-  - Nhấn giữ phím `H` để soi tức thời khung xe và điểm laser của frame trước (màu cam) và frame sau (màu xanh). Nhả phím ra là tắt, không cần bấm lùi frame liên tục.
+- **Giữ phím `Alt + H` (Hold to Peek Ghost Frames):**
+  - Nhấn giữ phím `Alt + H` (hoặc giữ nút `Soi vệt` trên HUD) để soi tức thời khung xe và điểm laser của 2 frame trước trên màn hình 3D. Nhả phím ra là tắt, không cần bấm lùi frame liên tục.
 
 ### 5. Thao tác Hàng loạt & Nội suy Chọn lọc (Selective Interpolation)
 - Giữ `Shift + Click` để chọn dải nhiều frame liên tiếp trong bảng.
@@ -65,13 +66,20 @@
 | **`F`** hoặc **`Alt + F`** | Đảo chiều đầu xe 180° (Frame hiện tại) |
 | **`Shift + F`** | Đảo chiều đầu xe 180° cho toàn bộ các frame của Track |
 | **`G`** hoặc **`Alt + G`** | Tự động hút đáy box sát mặt đất theo điểm LiDAR |
-| **Giữ phím `H`** | Bật chế độ soi bóng ma frame trước & sau (Nhả phím để tắt) |
-| **`Space`** hoặc **`Ctrl + \``** | Thu nhỏ / Mở rộng ngăn kéo đáy (Toggle Drawer) |
+| **Giữ phím `Alt + H`** | Bật chế độ soi vệt chuyển động & điểm laser 2 frame trước (Nhả phím để tắt) |
+| **`Alt + Space`** hoặc **`Ctrl + \``** | Thu nhỏ / Mở rộng ngăn kéo đáy (Toggle Drawer) |
+| **`F11`** | Phóng to / Thu nhỏ ngăn kéo toàn màn hình (Fullscreen Studio) |
 | **`Shift + Click`** | Chọn dải nhiều frame liên tiếp trong bảng |
+| **`Ctrl + A (Case 2)`** | Chọn toàn bộ (hoặc bỏ chọn) tất cả frame đang hiển thị |
+| **`Esc (Case 2)`** | Hủy bỏ nhanh vùng chọn các frame |
+| **`Home` / **`End (Case 2)`** | Nhảy tức thì tới frame đầu tiên / cuối cùng đang hiển thị |
+| **`↑`** / **`↓ (Case 2)`** | Lùi / Tiến 1 frame liền kề trong danh sách hiển thị |
+| **`Shift + ↑` / **`Shift + ↓ (Case 2)`** | Mở rộng dải chọn frame liên tiếp bằng bàn phím (Range Selection) |
+| **`PageUp` / **`PageDown (Case 2)`** | Nhảy lướt nhanh 5 frame trong danh sách hiển thị |
 | **`Ctrl + Z`** | Hoàn tác (Undo) |
 | **`Ctrl + Y`** | Làm lại (Redo) |
 | **`Ctrl + S`** | Lưu thay đổi vào RAM và bấm nút Save của CVAT |
-| **`Chuột phải`** | Bật Menu ngữ cảnh nhanh trên 3D Canvas hoặc Sidebar |
+| **`Nút ⋯ (Sidebar / HUD)`** | Mở các công cụ 3D Helper tích hợp trong menu Cuboid của CVAT |
 | **`?`** | Bật bảng hướng dẫn phím tắt |
 
 ---

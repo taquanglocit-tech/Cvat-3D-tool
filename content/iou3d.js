@@ -6,21 +6,58 @@
   const SP = (globalThis.CVATSuperPro ||= {});
   const G = SP.geom;
 
-  // Tính 4 đỉnh 2D của đáy box trên mặt phẳng Bird's Eye View (BEV: X, Y)
+  // Tính bao lồi 2D (Monotone Chain algorithm) cho tập điểm 2D
+  function convexHull2D(points) {
+    if (points.length <= 3) return points;
+    const pts = points.slice().sort((a, b) => a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1]);
+    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+
+    const lower = [];
+    for (const p of pts) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 1e-9) {
+        lower.pop();
+      }
+      lower.push(p);
+    }
+
+    const upper = [];
+    for (let i = pts.length - 1; i >= 0; i--) {
+      const p = pts[i];
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 1e-9) {
+        upper.pop();
+      }
+      upper.push(p);
+    }
+
+    lower.pop();
+    upper.pop();
+    return lower.concat(upper);
+  }
+
+  // Tính các đỉnh 2D của đáy box trên mặt phẳng Bird's Eye View (BEV: X, Y)
+  // Tự động thích ứng khi xe có góc nghiêng Pitch hoặc Roll bằng cách lấy bao lồi Convex Hull của 8 đỉnh 3D
   function getBox2DVertices(box) {
-    const ax = G.axes(box.r);
-    const hx = box.s[0] / 2;
-    const hy = box.s[1] / 2;
-    const corners2D = [
-      [hx, hy],
-      [-hx, hy],
-      [-hx, -hy],
-      [hx, -hy]
-    ];
-    return corners2D.map(([lx, ly]) => {
-      const p = G.localToWorld([lx, ly, 0], box.c, ax);
-      return [p[0], p[1]];
-    });
+    // Nếu box không bị nghiêng Roll/Pitch (hoặc rất nhỏ < 1e-4), dùng 4 đỉnh nhanh theo chiều CCW
+    if (Math.abs(box.r[0]) < 1e-4 && Math.abs(box.r[1]) < 1e-4) {
+      const ax = G.axes(box.r);
+      const hx = box.s[0] / 2;
+      const hy = box.s[1] / 2;
+      const corners2D = [
+        [hx, hy],
+        [-hx, hy],
+        [-hx, -hy],
+        [hx, -hy]
+      ];
+      return corners2D.map(([lx, ly]) => {
+        const p = G.localToWorld([lx, ly, 0], box.c, ax);
+        return [p[0], p[1]];
+      });
+    }
+
+    // Khi có góc nghiêng Roll/Pitch: lấy toàn bộ 8 đỉnh 3D chiếu xuống mặt phẳng Oxy và tính Convex Hull 2D
+    const corners8 = G.boxCorners(box);
+    const pts2D = corners8.map((c) => [c[0], c[1]]);
+    return convexHull2D(pts2D);
   }
 
   // Tính diện tích đa giác bằng công thức Shoelace (Gauss)
@@ -96,10 +133,29 @@
     const clipped = clipPolygon(polyA, polyB);
     const areaIntersect = Math.max(0, Math.abs(polygonArea(clipped)));
 
-    // 2. Giao cắt độ cao Z
-    const hzA = boxA.s[2] / 2, hzB = boxB.s[2] / 2;
-    const zMinA = boxA.c[2] - hzA, zMaxA = boxA.c[2] + hzA;
-    const zMinB = boxB.c[2] - hzB, zMaxB = boxB.c[2] + hzB;
+    // 2. Giao cắt độ cao Z (tự động tính bao lồi theo 8 đỉnh 3D nếu xe có góc nghiêng Pitch hoặc Roll)
+    let zMinA, zMaxA, zMinB, zMaxB;
+    if (Math.abs(boxA.r[0]) < 1e-4 && Math.abs(boxA.r[1]) < 1e-4) {
+      const hzA = boxA.s[2] / 2;
+      zMinA = boxA.c[2] - hzA;
+      zMaxA = boxA.c[2] + hzA;
+    } else {
+      const cA = G.boxCorners(boxA);
+      const zsA = cA.map((c) => c[2]);
+      zMinA = Math.min(...zsA);
+      zMaxA = Math.max(...zsA);
+    }
+
+    if (Math.abs(boxB.r[0]) < 1e-4 && Math.abs(boxB.r[1]) < 1e-4) {
+      const hzB = boxB.s[2] / 2;
+      zMinB = boxB.c[2] - hzB;
+      zMaxB = boxB.c[2] + hzB;
+    } else {
+      const cB = G.boxCorners(boxB);
+      const zsB = cB.map((c) => c[2]);
+      zMinB = Math.min(...zsB);
+      zMaxB = Math.max(...zsB);
+    }
     const hOverlap = Math.max(0, Math.min(zMaxA, zMaxB) - Math.max(zMinA, zMinB));
 
     // 3. Thể tích và tỷ lệ
@@ -148,7 +204,7 @@
 
         // Tính toán chi tiết
         const res = compute3DIoU(a.box, b.box);
-        if (res.iou >= threshold || res.maxOverlapRatio >= threshold) {
+        if (res.iou >= threshold || res.maxOverlapRatio >= threshold || (threshold > 0.1 && res.vIntersect >= 0.05)) {
           overlaps.push({
             frame,
             trackA: a.track,
@@ -159,6 +215,8 @@
             maxOverlapRatio: res.maxOverlapRatio,
             ratioA: res.ratioA,
             ratioB: res.ratioB,
+            vIntersect: res.vIntersect,
+            areaIntersect: res.areaIntersect,
           });
         }
       }
@@ -203,16 +261,30 @@
     const n = active.length;
     const matrix = Array.from({ length: n }, () => new Float32Array(n));
     const ratioMatrix = Array.from({ length: n }, () => new Float32Array(n));
+    const vIntersectMatrix = Array.from({ length: n }, () => new Float32Array(n));
+    const areaIntersectMatrix = Array.from({ length: n }, () => new Float32Array(n));
+    const hOverlapMatrix = Array.from({ length: n }, () => new Float32Array(n));
 
     for (let i = 0; i < n; i++) {
       matrix[i][i] = 1.0;
       ratioMatrix[i][i] = 1.0;
+      const vSelf = active[i].box.s[0] * active[i].box.s[1] * active[i].box.s[2];
+      vIntersectMatrix[i][i] = vSelf;
+      areaIntersectMatrix[i][i] = active[i].box.s[0] * active[i].box.s[1];
+      hOverlapMatrix[i][i] = active[i].box.s[2];
+
       for (let j = i + 1; j < n; j++) {
         const res = compute3DIoU(active[i].box, active[j].box);
         matrix[i][j] = res.iou;
         matrix[j][i] = res.iou;
         ratioMatrix[i][j] = res.ratioA;
         ratioMatrix[j][i] = res.ratioB;
+        vIntersectMatrix[i][j] = res.vIntersect;
+        vIntersectMatrix[j][i] = res.vIntersect;
+        areaIntersectMatrix[i][j] = res.areaIntersect;
+        areaIntersectMatrix[j][i] = res.areaIntersect;
+        hOverlapMatrix[i][j] = res.hOverlap;
+        hOverlapMatrix[j][i] = res.hOverlap;
       }
     }
 
@@ -220,6 +292,9 @@
       activeTracks: active,
       matrix,
       ratioMatrix,
+      vIntersectMatrix,
+      areaIntersectMatrix,
+      hOverlapMatrix,
     };
   }
 
@@ -245,7 +320,7 @@
       if (distSq > (maxDimA + maxDimB) ** 2) continue;
 
       const res = compute3DIoU(boxA, boxB);
-      if (res.iou >= threshold || res.maxOverlapRatio >= threshold) {
+      if (res.iou >= threshold || res.maxOverlapRatio >= threshold || (threshold > 0.1 && res.vIntersect >= 0.05)) {
         overlaps.push({
           frame,
           trackA: targetTrack,
@@ -256,6 +331,8 @@
           maxOverlapRatio: res.maxOverlapRatio,
           ratioA: res.ratioA,
           ratioB: res.ratioB,
+          vIntersect: res.vIntersect,
+          areaIntersect: res.areaIntersect,
         });
       }
     }

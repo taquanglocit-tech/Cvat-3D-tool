@@ -25,24 +25,29 @@
     closeMenu();
 
     const labelName = info.labelName || 'Cuboid';
-    const labelColor = info.labelColor || '#58a6ff';
+    const labelColor = info.labelColor || '#177ddc';
+    const pos = SP.ui.getFloatingPosition(x, 240, 320, { y, margin: 8, preferFlip: true });
 
     menuEl = h('div', {
       class: 'cvat-super-pro-context-menu',
       style: {
         position: 'fixed',
-        left: `${Math.min(x, window.innerWidth - 240)}px`,
-        top: `${Math.min(y, window.innerHeight - 260)}px`,
+        left: `${pos.left}px`,
+        top: `${pos.top}px`,
+        maxHeight: `${pos.maxHeight}px`,
+        overflowY: 'auto',
+        boxSizing: 'border-box',
+        overscrollBehavior: 'contain',
         zIndex: '2147483010',
-        background: '#161b22',
-        border: '1px solid #30363d',
-        borderRadius: '6px',
+        background: '#1f1f1f',
+        border: '1px solid #303030',
+        borderRadius: '4px',
         boxShadow: '0 8px 24px rgba(0,0,0,0.65)',
-        color: '#c9d1d9',
+        color: '#d9d9d9',
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         fontSize: '12px',
         padding: '4px',
-        minWidth: '220px',
+        minWidth: '230px',
         userSelect: 'none',
       }
     });
@@ -52,8 +57,8 @@
         padding: '6px 10px',
         fontSize: '11px',
         fontWeight: '600',
-        color: '#8b949e',
-        borderBottom: '1px solid #21262d',
+        color: '#8c8c8c',
+        borderBottom: '1px solid #303030',
         display: 'flex',
         alignItems: 'center',
         gap: '6px',
@@ -74,13 +79,13 @@
           alignItems: 'center',
           gap: '8px',
           padding: '6px 10px',
-          borderRadius: '4px',
+          borderRadius: '3px',
           cursor: 'pointer',
-          color: '#e6edf3',
+          color: '#d9d9d9',
           transition: 'background 0.1s',
         },
-        onmouseenter: () => { row.style.background = '#1f6feb'; },
-        onmouseleave: () => { row.style.background = 'transparent'; },
+        onmouseenter: () => { row.style.background = '#177ddc'; row.style.color = '#ffffff'; },
+        onmouseleave: () => { row.style.background = 'transparent'; row.style.color = '#d9d9d9'; },
         onclick: async (e) => {
           e.stopPropagation();
           closeMenu();
@@ -89,26 +94,34 @@
       },
         iconNode,
         h('span', { style: { flex: '1' } }, label),
-        shortcut ? h('span', { style: { fontSize: '10px', color: '#8b949e' } }, shortcut) : null
+        shortcut ? h('span', { style: { fontSize: '10px', opacity: '0.75', fontFamily: 'SFMono-Regular, Consolas, monospace' } }, shortcut) : null
       );
       return row;
     }
 
-    const divider = () => h('div', { style: { height: '1px', background: '#30363d', margin: '4px 0' } });
+    const divider = () => h('div', { style: { height: '1px', background: '#303030', margin: '4px 0' } });
 
     menuEl.append(
       head,
       item(SP.icons.layers(14), 'Sửa chuỗi frame (Mở Drawer)', 'Alt+Space', () => {
         SP.app.openDrawer({ trackId: clientID, tab: 'case2' });
       }),
+      item(SP.icons.cube(14), 'Chuẩn hóa Size L/W/H', '', () => {
+        SP.app.openDrawer({ trackId: clientID, tab: 'case1' });
+      }),
       item(SP.icons.flip(14), 'Đảo đầu 180° (Frame này)', 'F', async () => {
         await SP.bridge.flipActiveHeading(clientID, undefined, false);
+        if (SP.app?.store) await SP.app.store.syncFromCvat();
+        SP.hud?.update?.(true);
       }),
       item(SP.icons.flip(14), 'Đảo đầu 180° (Toàn bộ track)', 'Shift+F', async () => {
         await SP.bridge.flipActiveHeading(clientID, undefined, true);
+        if (SP.app?.store) await SP.app.store.syncFromCvat();
+        SP.hud?.update?.(true);
       }),
       item(SP.icons.ground(14), 'Hút đáy sát mặt đất', 'G', async () => {
         await SP.app.snapTrackToGround(clientID);
+        SP.hud?.update?.(true);
       }),
       divider(),
       item(SP.icons.overlap(14), 'Kiểm tra va chạm & Lỗi QA', '', () => {
@@ -151,7 +164,7 @@
     titleLi.style.cssText = 'padding: 6px 12px 2px 12px; font-size: 11px; font-weight: 600; color: rgba(128, 128, 128, 0.85); text-transform: uppercase; letter-spacing: 0.5px; user-select: none;';
     titleLi.textContent = `3D Helper (#${trackId})`;
 
-    function makeItem(iconNode, text, onClick) {
+    function makeItem(iconNode, text, shortcut, onClick) {
       const li = document.createElement('li');
       li.className = 'cvat-super-pro-injected ant-dropdown-menu-item';
       li.style.cssText = 'padding: 0; margin: 0;';
@@ -171,9 +184,15 @@
 
       const span = document.createElement('span');
       span.textContent = text;
-      span.style.color = 'inherit';
+      span.style.cssText = 'color: inherit; flex: 1;';
 
       btn.append(iconNode, span);
+      if (shortcut) {
+        const kbd = document.createElement('span');
+        kbd.textContent = shortcut;
+        kbd.style.cssText = 'font-size: 11px; opacity: 0.55; margin-left: 8px; font-family: SFMono-Regular, Consolas, monospace;';
+        btn.append(kbd);
+      }
       li.append(btn);
 
       li.onclick = async (ev) => {
@@ -188,19 +207,27 @@
     menuList.append(
       divider,
       titleLi,
-      makeItem(SP.icons.layers(14), 'Sửa chuỗi frame (Mở Drawer)', () => {
+      makeItem(SP.icons.layers(14), 'Sửa chuỗi frame (Mở Drawer)', 'Alt+Space', () => {
         SP.app.openDrawer({ trackId, tab: 'case2' });
       }),
-      makeItem(SP.icons.flip(14), 'Đảo đầu 180° (Frame này)', async () => {
+      makeItem(SP.icons.cube(14), 'Chuẩn hóa Size L/W/H', '', () => {
+        SP.app.openDrawer({ trackId, tab: 'case1' });
+      }),
+      makeItem(SP.icons.flip(14), 'Đảo đầu 180° (Frame này)', 'F', async () => {
         await SP.bridge.flipActiveHeading(trackId, undefined, false);
+        if (SP.app?.store) await SP.app.store.syncFromCvat();
+        SP.hud?.update?.(true);
       }),
-      makeItem(SP.icons.flip(14), 'Đảo đầu 180° (Toàn bộ track)', async () => {
+      makeItem(SP.icons.flip(14), 'Đảo đầu 180° (Toàn bộ track)', 'Shift+F', async () => {
         await SP.bridge.flipActiveHeading(trackId, undefined, true);
+        if (SP.app?.store) await SP.app.store.syncFromCvat();
+        SP.hud?.update?.(true);
       }),
-      makeItem(SP.icons.ground(14), 'Hút đáy sát mặt đất (G)', async () => {
+      makeItem(SP.icons.ground(14), 'Hút đáy sát mặt đất', 'G', async () => {
         await SP.app.snapTrackToGround(trackId);
+        SP.hud?.update?.(true);
       }),
-      makeItem(SP.icons.overlap(14), 'Kiểm tra va chạm Overlap', () => {
+      makeItem(SP.icons.overlap(14), 'Kiểm tra va chạm Overlap', '', () => {
         SP.app.openDrawer({ tab: 'case3' });
       })
     );

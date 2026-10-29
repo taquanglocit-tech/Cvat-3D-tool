@@ -1,0 +1,38 @@
+# Environment and local configs (chứa URL, API keys, credentials nội bộ)
+.env
+.env.*
+*.local
+config.json
+config.local.json
+servers.json
+urls.txt
+endpoints.json
+
+# Logs & temp files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.tmp
+*.bak
+
+# Operating System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.swp
+*~
+
+# Dependencies & Build artifacts (nếu sau này đóng gói)
+node_modules/
+dist/
+build/
+*.zip
+*.crx

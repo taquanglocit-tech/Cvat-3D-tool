@@ -24,7 +24,17 @@ async function renderOrigins() {
     const li = document.createElement('li');
     
     const label = document.createElement('span');
-    label.innerHTML = `<b style="color: #58a6ff;">${origin}</b> <span style="margin-left: 10px; font-size: 13px;" class="${granted ? 'ok' : 'bad'}">${granted ? '✔ Tự động kích hoạt' : '● Cần bấm icon để bật'}</span>`;
+    const hostBold = document.createElement('b');
+    hostBold.style.color = '#58a6ff';
+    hostBold.textContent = origin;
+
+    const statusSpan = document.createElement('span');
+    statusSpan.style.marginLeft = '10px';
+    statusSpan.style.fontSize = '13px';
+    statusSpan.className = granted ? 'ok' : 'bad';
+    statusSpan.textContent = granted ? '[Tự động kích hoạt]' : '[Chưa cấp quyền - mở popup để bật]';
+
+    label.append(hostBold, ' ', statusSpan);
     
     const actions = document.createElement('span');
     if (!granted) {

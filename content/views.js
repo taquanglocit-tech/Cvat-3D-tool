@@ -15,16 +15,51 @@
   const VS = `#version 300 es
     in vec3 aPos;
     in float aIntensity;
+    in vec3 aRgb;
     uniform vec3 uC, uU, uV, uD;
     uniform vec2 uScale, uDepth, uPan;
-    uniform float uPointSize, uMinIntensity;
+    uniform float uPointSize, uMinIntensity, uCropMargin, uColorMode, uHideGround, uHeatmapGain;
     uniform vec3 uBC, uBx, uBy, uBz, uBHalf;
     uniform vec3 uColIn, uColOut;
     out vec3 vCol;
     out float vAlpha;
 
+    // Dải màu Heatmap khoa học (Turbo-LiDAR cao cấp)
+    // Phân cấp trực quan rõ rệt: Tím sẫm (mờ) -> Xanh ngọc biển -> Xanh lá -> Vàng tươi -> Đỏ cam -> Trắng đục rực rỡ
+    vec3 heatmapColor(float t) {
+      float x = clamp(t, 0.0, 1.0);
+      x = pow(x, 0.70); // Uốn cong nhẹ nhàng, giữ dải tương phản rộng không bị cháy bão hoà sớm
+      if (x < 0.20) {
+        return mix(vec3(0.12, 0.05, 0.45), vec3(0.05, 0.52, 0.92), x / 0.20);
+      } else if (x < 0.45) {
+        return mix(vec3(0.05, 0.52, 0.92), vec3(0.10, 0.88, 0.38), (x - 0.20) / 0.25);
+      } else if (x < 0.70) {
+        return mix(vec3(0.10, 0.88, 0.38), vec3(0.98, 0.86, 0.10), (x - 0.45) / 0.25);
+      } else if (x < 0.88) {
+        return mix(vec3(0.98, 0.86, 0.10), vec3(1.00, 0.22, 0.08), (x - 0.70) / 0.18);
+      }
+      return mix(vec3(1.00, 0.22, 0.08), vec3(1.00, 0.96, 0.96), (x - 0.88) / 0.12);
+    }
+
     void main() {
       if (aIntensity < uMinIntensity) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        gl_PointSize = 0.0;
+        return;
+      }
+
+      vec3 b = aPos - uBC;
+      vec3 q = vec3(dot(b, uBx), dot(b, uBy), dot(b, uBz));
+
+      // 3D Crop Box quanh Cuboid theo hệ trục địa phương q (loại bỏ cây cối/tường/xe ở xa)
+      if (uCropMargin > 0.0 && any(greaterThan(abs(q), uBHalf + vec3(uCropMargin)))) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        gl_PointSize = 0.0;
+        return;
+      }
+
+      // Ẩn mặt đất theo trục Z cục bộ của hộp (hoạt động cả khi xoay Orbit 3D)
+      if (uHideGround > 0.5 && q.z < -uBHalf.z + 0.10) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
         gl_PointSize = 0.0;
         return;
@@ -39,16 +74,43 @@
       }
 
       gl_Position = vec4(dot(w, uU) * uScale.x + uPan.x, dot(w, uV) * uScale.y + uPan.y, 0.0, 1.0);
-      gl_PointSize = uPointSize;
 
-      vec3 b = aPos - uBC;
-      vec3 q = vec3(dot(b, uBx), dot(b, uBy), dot(b, uBz));
       bool inside = all(lessThanEqual(abs(q), uBHalf));
+      float normI = clamp(aIntensity, 0.0, 1.0);
 
-      // Ánh xạ độ sáng theo cường độ phản xạ LiDAR Intensity
-      float brightness = clamp(0.3 + 0.7 * aIntensity, 0.3, 1.0);
-      vCol = (inside ? uColIn : uColOut) * brightness;
-      vAlpha = inside ? 1.0 : clamp(0.4 + 0.6 * aIntensity, 0.4, 0.95);
+      // Chế độ 2: Màu thực tế RGB từ ảnh Camera 2D
+      if (uColorMode > 1.5) {
+        gl_PointSize = uPointSize;
+        vCol = inside ? aRgb * 1.08 : aRgb * 0.78;
+        vAlpha = inside ? 1.0 : 0.85;
+      } else if (uColorMode > 0.5) {
+        // Chế độ 1: Tô màu Heatmap theo dải màu rực rỡ và độ mờ/đục (Translucent ⇄ Opaque)
+        float gain = uHeatmapGain > 0.0 ? uHeatmapGain : 1.2;
+        float val = clamp(normI * gain, 0.0, 1.0);
+        vec3 heat = heatmapColor(val);
+
+        // Hạt phản xạ yếu (nhiễu bụi, tán cây mỏng, kính xe): alpha vừa phải (0.40) để vẫn thấy rõ hạt
+        // Hạt phản xạ mạnh (kim loại, vỏ xe, biển số): đặc quánh sắc nét (alpha = 1.0)
+        float alphaCurve = smoothstep(0.02, 0.55, val);
+        float baseAlpha = mix(0.40, 1.0, alphaCurve);
+
+        gl_PointSize = uPointSize * mix(0.85, 1.10, alphaCurve);
+        vCol = inside ? heat * 1.08 : heat * 0.70;
+        vAlpha = inside ? baseAlpha : baseAlpha * 0.65;
+      } else {
+        // Chế độ 0: Tô màu theo nhãn với độ sáng và độ nét tối đa
+        gl_PointSize = uPointSize;
+        float alphaCurve = smoothstep(0.02, 0.50, normI);
+        if (inside) {
+          // Các hạt bên trong xe luôn RÕ NÉT, SÁNG RỰC với alpha = 1.0
+          vCol = uColIn * clamp(0.75 + 0.25 * normI, 0.75, 1.0);
+          vAlpha = 1.0;
+        } else {
+          // Các hạt bên ngoài có độ mờ nhẹ theo cường độ
+          vCol = uColOut * clamp(0.60 + 0.40 * normI, 0.60, 0.95);
+          vAlpha = mix(0.45, 0.85, alphaCurve);
+        }
+      }
     }`;
 
   const FS = `#version 300 es
@@ -121,11 +183,13 @@
 
       this.loc = {};
       const uniforms = ['uC', 'uU', 'uV', 'uD', 'uScale', 'uDepth', 'uPan', 'uPointSize', 'uMinIntensity',
+                        'uCropMargin', 'uColorMode', 'uHideGround', 'uHeatmapGain',
                         'uBC', 'uBx', 'uBy', 'uBz', 'uBHalf', 'uColIn', 'uColOut'];
       for (const n of uniforms) this.loc[n] = gl.getUniformLocation(prog, n);
 
       this.aPos = gl.getAttribLocation(prog, 'aPos');
       this.aIntensity = gl.getAttribLocation(prog, 'aIntensity');
+      this.aRgb = gl.getAttribLocation(prog, 'aRgb');
       this.vao = gl.createVertexArray();
 
       this.onScroll = () => this.requestRender();
@@ -142,6 +206,7 @@
       for (const b of this.buffers.values()) {
         this.gl.deleteBuffer(b.posBuf);
         this.gl.deleteBuffer(b.intBuf);
+        if (b.rgbBuf) this.gl.deleteBuffer(b.rgbBuf);
       }
       this.buffers.clear();
       if (this.prog) this.gl.deleteProgram(this.prog);
@@ -211,6 +276,7 @@
       if (b) {
         this.gl.deleteBuffer(b.posBuf);
         this.gl.deleteBuffer(b.intBuf);
+        if (b.rgbBuf) this.gl.deleteBuffer(b.rgbBuf);
         this.buffers.delete(frame);
       }
       this.requestRender();
@@ -252,15 +318,20 @@
     }
 
     camera(cell, pos) {
-      const V = VIEWS[cell.view];
       const box = pos.box;
-      const bax = G.axes(box.r);
-      const ax = this.settings.allowTilt ? bax : {
-        ex: [Math.cos(box.r[2]), Math.sin(box.r[2]), 0],
-        ey: [-Math.sin(box.r[2]), Math.cos(box.r[2]), 0],
-        ez: [0, 0, 1],
-      };
-      return { c: box.c, ax, pan: cell.pan, half: box.s.map((v) => v / 2) };
+      // Chỉ khóa tâm và trục Camera khi đang kéo cạnh (resize) hoặc tịnh tiến (move)
+      // để đám mây điểm và cạnh đối diện đứng im tuyệt đối.
+      // Khi xoay (rotate), để Camera cập nhật trực tiếp theo G.axes(box.r) nhằm đổi góc nhìn mượt mà
+      // và giữ cho 8 đỉnh 3D luôn chiếu trùng khít thành 1 khung chữ nhật duy nhất.
+      if (this.drag && this.drag.cell === cell && (this.drag.target.kind === 'resize' || this.drag.target.kind === 'move')) {
+        return {
+          c: this.drag.cam.c,
+          ax: this.drag.cam.ax,
+          pan: cell.pan,
+          half: box.s.map((v) => v / 2),
+        };
+      }
+      return { c: box.c, ax: G.axes(box.r), pan: cell.pan, half: box.s.map((v) => v / 2) };
     }
 
     project(worldP, cam, view, rect, ppm) {
@@ -302,7 +373,14 @@
       gl.bindBuffer(gl.ARRAY_BUFFER, intBuf);
       gl.bufferData(gl.ARRAY_BUFFER, cloud.intensity || new Float32Array(cloud.xyz.length / 3).fill(1.0), gl.STATIC_DRAW);
 
-      b = { xyzRef: cloud.xyz, posBuf, intBuf, count: cloud.xyz.length / 3 };
+      let rgbBuf = null;
+      if (cloud.rgb && cloud.rgb.length) {
+        rgbBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, rgbBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, cloud.rgb, gl.STATIC_DRAW);
+      }
+
+      b = { xyzRef: cloud.xyz, posBuf, intBuf, rgbBuf, count: cloud.xyz.length / 3 };
       this.buffers.set(frame, b);
       return b;
     }
@@ -350,7 +428,9 @@
           const slab = S.slab || 1.0;
           const hd = cam.half[V.di];
           let depth;
-          if (cell.view === 'top') {
+          if (cell.orbit) {
+            depth = [-25.0, 25.0];
+          } else if (cell.view === 'top') {
             if (S.topAll || S.context) depth = [S.hideGround ? -cam.half[2] + 0.12 : -1e6, 1e6];
             else depth = [S.hideGround ? -cam.half[2] + 0.12 : -cam.half[2] - 1.5, cam.half[2] + 0.5];
           } else {
@@ -358,15 +438,25 @@
           }
           const bax = G.axes(pos.box.r);
           const l = this.loc;
+          const vecU = cell.orbit ? cell.orbit.u : cam.ax[V.u];
+          const vecV = cell.orbit ? cell.orbit.v : cam.ax[V.v];
+          const vecD = cell.orbit ? cell.orbit.d : cam.ax[V.d];
           gl.uniform3fv(l.uC, cam.c);
-          gl.uniform3fv(l.uU, cam.ax[V.u]);
-          gl.uniform3fv(l.uV, cam.ax[V.v]);
-          gl.uniform3fv(l.uD, cam.ax[V.d]);
+          gl.uniform3fv(l.uU, vecU);
+          gl.uniform3fv(l.uV, vecV);
+          gl.uniform3fv(l.uD, vecD);
           gl.uniform2f(l.uScale, (2 * ppm) / r.w, (2 * ppm) / r.h);
           gl.uniform2f(l.uPan, (2 * cam.pan[0]) / r.w, (-2 * cam.pan[1]) / r.h);
           gl.uniform2f(l.uDepth, depth[0], depth[1]);
-          gl.uniform1f(l.uPointSize, (S.pointSize || 2) * dpr);
+          gl.uniform1f(l.uPointSize, (S.pointSize || 2.5) * dpr);
           gl.uniform1f(l.uMinIntensity, S.minIntensity || 0.0);
+          gl.uniform1f(l.uCropMargin, S.cropMargin || 0.0);
+          let colorModeVal = 0.0;
+          if (S.colorMode === 'rgb') colorModeVal = 2.0;
+          else if (S.colorMode === 'heat' || S.colorByIntensity) colorModeVal = 1.0;
+          gl.uniform1f(l.uColorMode, colorModeVal);
+          gl.uniform1f(l.uHeatmapGain, S.heatmapGain || 1.2);
+          gl.uniform1f(l.uHideGround, S.hideGround ? 1.0 : 0.0);
           gl.uniform3fv(l.uBC, pos.box.c);
           gl.uniform3fv(l.uBx, bax.ex);
           gl.uniform3fv(l.uBy, bax.ey);
@@ -384,6 +474,18 @@
           gl.bindBuffer(gl.ARRAY_BUFFER, buf.intBuf);
           gl.enableVertexAttribArray(this.aIntensity);
           gl.vertexAttribPointer(this.aIntensity, 1, gl.FLOAT, false, 0, 0);
+
+          // Gán thuộc tính màu camera aRgb (nếu có)
+          if (this.aRgb >= 0) {
+            if (buf.rgbBuf) {
+              gl.bindBuffer(gl.ARRAY_BUFFER, buf.rgbBuf);
+              gl.enableVertexAttribArray(this.aRgb);
+              gl.vertexAttribPointer(this.aRgb, 3, gl.FLOAT, false, 0, 0);
+            } else {
+              gl.disableVertexAttribArray(this.aRgb);
+              gl.vertexAttrib3f(this.aRgb, 0.85, 0.85, 0.85);
+            }
+          }
 
           gl.drawArrays(gl.POINTS, 0, buf.count);
         }
@@ -427,29 +529,90 @@
     }
 
     drawBox(ctx, cell, pos, cam, rect, ppm, noPoints) {
-      const V = VIEWS[cell.view];
       const box = pos.box;
-      const corners = G.boxCorners(box);
-      const pts = corners.map((p) => this.project(p, cam, cell.view, rect, ppm));
 
-      // 1. Vẽ các cạnh của Cuboid hiện tại
+      // Chế độ Hold-to-Orbit 3D: vẽ khung dây 12 cạnh 3D + mặt trước nổi bật + mũi tên hướng đầu xe 3D
+      if (cell.orbit) {
+        const proj3D = (worldP) => {
+          const w = G.sub(worldP, cam.c);
+          const u = G.dot(w, cell.orbit.u);
+          const v = G.dot(w, cell.orbit.v);
+          return [rect.w / 2 + u * ppm + cam.pan[0], rect.h / 2 - v * ppm + cam.pan[1]];
+        };
+        const corners = G.boxCorners(box).map(proj3D);
+        const mainCol = pos.outside ? '#da3633' : (this.settings.color || '#3fb950');
+
+        // Vẽ 8 cạnh thân/đuôi hộp
+        ctx.lineWidth = 1.4;
+        ctx.strokeStyle = mainCol;
+        ctx.setLineDash(pos.keyframe ? [] : [4, 4]);
+        ctx.beginPath();
+        for (const [i, j] of G.BOX_EDGES) {
+          if (i >= 4 && j >= 4) continue;
+          ctx.moveTo(corners[i][0], corners[i][1]);
+          ctx.lineTo(corners[j][0], corners[j][1]);
+        }
+        ctx.stroke();
+
+        // Vẽ 4 cạnh mặt trước (Front Face: đỉnh 4,5,6,7 ứng với +ex) nổi bật màu cam/vàng
+        ctx.lineWidth = 2.0;
+        ctx.strokeStyle = '#f0883e';
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        for (const [i, j] of [[4, 5], [6, 7], [4, 6], [5, 7]]) {
+          ctx.moveTo(corners[i][0], corners[i][1]);
+          ctx.lineTo(corners[j][0], corners[j][1]);
+        }
+        ctx.stroke();
+
+        // Vẽ trục mũi tên chỉ hướng đầu xe 3D từ tâm hộp ra phía trước
+        const ax = G.axes(box.r);
+        const c2d = proj3D(box.c);
+        const f2d = proj3D(G.localToWorld([box.s[0] / 2 + 0.35, 0, 0], box.c, ax));
+        ctx.strokeStyle = '#f0883e';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(c2d[0], c2d[1]);
+        ctx.lineTo(f2d[0], f2d[1]);
+        ctx.stroke();
+
+        ctx.fillStyle = '#f0883e';
+        ctx.beginPath();
+        ctx.arc(f2d[0], f2d[1], 3.2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Nhãn trạng thái Orbit 3D
+        ctx.font = '600 10px SFMono-Regular, Consolas, monospace';
+        ctx.fillStyle = '#58a6ff';
+        ctx.fillText('3D ORBIT · Thả chuột về 2D', 6, 13);
+        return;
+      }
+
+      const H = this.handles(cell, pos, cam, rect, ppm);
+      const p00 = H.P(-1, -1);
+      const p10 = H.P(1, -1);
+      const p11 = H.P(1, 1);
+      const p01 = H.P(-1, 1);
+
+      // 1. Vẽ khung 2D chuẩn xác đi qua đúng tâm 4 chấm tròn ở góc (không vẽ đè 12 cạnh gây tách 2 viền trong/ngoài)
       ctx.lineWidth = pos.keyframe ? 1.8 : 1.3;
       ctx.strokeStyle = pos.outside ? '#da3633' : (this.settings.color || '#3fb950');
       ctx.setLineDash(pos.keyframe ? [] : [4, 4]);
 
-      for (const [i, j] of G.BOX_EDGES) {
-        ctx.beginPath();
-        ctx.moveTo(pts[i][0], pts[i][1]);
-        ctx.lineTo(pts[j][0], pts[j][1]);
-        ctx.stroke();
-      }
+      ctx.beginPath();
+      ctx.moveTo(p00[0], p00[1]);
+      ctx.lineTo(p10[0], p10[1]);
+      ctx.lineTo(p11[0], p11[1]);
+      ctx.lineTo(p01[0], p01[1]);
+      ctx.closePath();
+      ctx.stroke();
       ctx.setLineDash([]);
 
       // 2. Mũi tên chỉ hướng đầu xe (Heading Arrow) trên Top View
       if (cell.view === 'top') {
         const ax = G.axes(box.r);
         const frontCenter = this.project(G.localToWorld([box.s[0] / 2, 0, 0], box.c, ax), cam, cell.view, rect, ppm);
-        const center = this.project(box.c, cam, cell.view, rect, ppm);
+        const center = H.center;
         ctx.strokeStyle = '#f0883e';
         ctx.lineWidth = 2.2;
         ctx.beginPath();
@@ -459,7 +622,6 @@
       }
 
       // 3. Vẽ các tay nắm điều khiển (Handles)
-      const H = this.handles(cell, pos, cam, rect, ppm);
       const isLocked = SP.app?.isSizeLocked || this.settings?.isSizeLocked;
       if (!isLocked) {
         for (const h of H.list) {
@@ -478,8 +640,8 @@
         }
       }
 
-      // 4. Nút xoay (chấm cam)
-      if (cell.view === 'top' || this.settings.allowTilt) {
+      // 4. Nút xoay (chấm cam): Hỗ trợ xoay cả Top (Yaw), Side (Pitch) và Front (Roll)
+      if (cell.view === 'top' || this.settings.allowTilt !== false) {
         ctx.strokeStyle = '#f0883e';
         ctx.lineWidth = 1.2;
         ctx.beginPath();
@@ -494,15 +656,39 @@
         ctx.arc(H.rot[0], H.rot[1], 4.8, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+
+        // Hiển thị tia dẫn hướng và số độ góc xoay khi đang nhấn giữ chuột xoay
+        if (this.drag && this.drag.cell === cell && this.drag.target.kind === 'rotate' && this.drag.moved) {
+          const d = this.drag;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(240, 136, 62, 0.85)';
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(H.center[0], H.center[1]);
+          ctx.lineTo(d.curX, d.curY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          const deg = ((d.lastAngleRad || 0) * 180) / Math.PI;
+          const label = `${deg >= 0 ? '+' : ''}${deg.toFixed(1)}°`;
+          ctx.font = '600 10px SFMono-Regular, Consolas, monospace';
+          ctx.fillStyle = '#f0883e';
+          ctx.fillText(label, Math.min(rect.w - 38, Math.max(6, d.curX + 8)), Math.min(rect.h - 6, Math.max(14, d.curY - 6)));
+          ctx.restore();
+        }
       }
 
-      // 5. Nhãn góc nhìn (TOP / SIDE / FRONT), trạng thái OUTSIDE & tải Point Cloud
+      // 5. Nhãn góc nhìn (TOP / SIDE / FRONT), trạng thái OUTSIDE / OCCLUDED & tải Point Cloud
       ctx.font = '600 10px SFMono-Regular, Consolas, monospace';
       ctx.fillStyle = 'rgba(255,255,255,0.45)';
       ctx.fillText(cell.view.toUpperCase(), 6, 13);
       if (pos.outside) {
         ctx.fillStyle = '#da3633';
         ctx.fillText('OUTSIDE', rect.w - 54, 13);
+      } else if (pos.occluded) {
+        ctx.fillStyle = '#faad14';
+        ctx.fillText('OCCLUDED', rect.w - 60, 13);
       }
       if (noPoints) {
         ctx.fillStyle = 'rgba(255,255,255,0.35)';
@@ -518,7 +704,7 @@
       const cam = this.camera(cell, pos);
       const H = this.handles(cell, pos, cam, rect, ppm);
 
-      if (cell.view === 'top' || this.settings.allowTilt) {
+      if (cell.view === 'top' || this.settings.allowTilt !== false) {
         if (Math.hypot(x - H.rot[0], y - H.rot[1]) <= HANDLE_R + 3) {
           return { kind: 'rotate', center: H.center };
         }
@@ -557,6 +743,34 @@
       if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
       const r = cell.el.getBoundingClientRect();
       const x = e.clientX - r.left, y = e.clientY - r.top;
+
+      // Nhấn giữ Chuột phải (hoặc Alt + Chuột trái) để xoay góc nhìn 3D tạm thời (Hold-to-Orbit 3D)
+      if (e.button === 2 || (e.button === 0 && e.altKey)) {
+        const pos = this.getBox(cell.frame);
+        if (!pos) return;
+        e.preventDefault();
+        cell.el.setPointerCapture(e.pointerId);
+        const V = VIEWS[cell.view];
+        const cam = this.camera(cell, pos);
+        const u0 = cam.ax[V.u].slice();
+        const v0 = cam.ax[V.v].slice();
+        const d0 = cam.ax[V.d].slice();
+        cell.orbit = { u: u0, v: v0, d: d0, yaw: 0, pitch: 0 };
+        this.drag = {
+          cell,
+          target: { kind: 'orbit' },
+          startX: x,
+          startY: y,
+          u0,
+          v0,
+          d0,
+          moved: false,
+        };
+        cell.el.style.cursor = 'grabbing';
+        this.requestRender();
+        return;
+      }
+
       const h = this.hit(cell, x, y);
 
       if (e.button === 0 && h) {
@@ -589,6 +803,21 @@
       const x = e.clientX - r.left, y = e.clientY - r.top;
       const dx = x - d.startX, dy = y - d.startY;
 
+      if (d.target.kind === 'orbit') {
+        d.moved = true;
+        const yaw = -dx * 0.012;
+        const pitch = Math.max(-Math.PI * 0.48, Math.min(Math.PI * 0.48, dy * 0.012));
+        const cosY = Math.cos(yaw), sinY = Math.sin(yaw);
+        const u1 = G.add(G.scale(d.u0, cosY), G.scale(d.d0, sinY));
+        const d1 = G.add(G.scale(d.d0, cosY), G.scale(d.u0, -sinY));
+        const cosP = Math.cos(pitch), sinP = Math.sin(pitch);
+        const v2 = G.add(G.scale(d.v0, cosP), G.scale(d1, -sinP));
+        const d2 = G.add(G.scale(d1, cosP), G.scale(d.v0, sinP));
+        d.cell.orbit = { u: u1, v: v2, d: d2, yaw, pitch };
+        this.requestRender();
+        return;
+      }
+
       if (d.target.kind === 'pan') {
         d.cell.pan[0] = d.startPan[0] + dx;
         d.cell.pan[1] = d.startPan[1] + dy;
@@ -614,39 +843,73 @@
         const du = dx / d.ppm, dv = -dy / d.ppm;
         const ui = V.ui, vi = V.vi;
         if (d.target.a !== 0) {
-          cur.s[ui] = Math.max(0.1, start.s[ui] + d.target.a * du);
-          cur.c = G.add(cur.c, G.scale(ax[V.u], (d.target.a * du) / 2));
+          const newS = Math.max(0.1, start.s[ui] + d.target.a * du);
+          const actualDelta = newS - start.s[ui];
+          cur.s[ui] = newS;
+          cur.c = G.add(cur.c, G.scale(ax[V.u], (d.target.a * actualDelta) / 2));
         }
         if (d.target.b !== 0) {
-          cur.s[vi] = Math.max(0.1, start.s[vi] + d.target.b * dv);
-          cur.c = G.add(cur.c, G.scale(ax[V.v], (d.target.b * dv) / 2));
+          const newS = Math.max(0.1, start.s[vi] + d.target.b * dv);
+          const actualDelta = newS - start.s[vi];
+          cur.s[vi] = newS;
+          cur.c = G.add(cur.c, G.scale(ax[V.v], (d.target.b * actualDelta) / 2));
         }
       } else if (d.target.kind === 'rotate') {
         const cx = d.target.center[0], cy = d.target.center[1];
         const a1 = Math.atan2(d.startY - cy, d.startX - cx);
         const a2 = Math.atan2(y - cy, x - cx);
         let da = a2 - a1;
+        while (da > Math.PI) da -= 2 * Math.PI;
+        while (da < -Math.PI) da += 2 * Math.PI;
         if (e.shiftKey) da = Math.round(da / (Math.PI / 36)) * (Math.PI / 36);
         const axis = V.di;
         const sign = d.cell.view === 'side' ? 1 : -1;
+        d.curX = x;
+        d.curY = y;
+        d.lastAngleRad = sign * da;
         cur.r = G.rotateLocal(start.r, axis, sign * da);
       }
 
-      this.onEdit?.(d.cell.frame, cur);
+      const editMeta = {
+        kind: d.target.kind,
+        view: d.cell.view,
+        axis: d.target.kind === 'rotate' ? V.di : undefined,
+        angle: d.target.kind === 'rotate' ? d.lastAngleRad : undefined,
+      };
+      this.onEdit?.(d.cell.frame, cur, editMeta);
       this.requestRender();
     }
 
     pointerUp(e) {
       if (!this.drag) return;
-      if (this.drag.target.kind !== 'pan') {
-        if (this.drag.moved) {
-          const pos = this.getBox(this.drag.cell.frame);
-          this.onEditEnd?.(this.drag.cell.frame, this.drag.startBox, pos ? pos.box : this.drag.startBox);
+      const d = this.drag;
+      this.drag = null;
+      if (d.target.kind === 'orbit') {
+        d.cell.orbit = null;
+        d.cell.el.style.cursor = 'grab';
+        this.requestRender();
+        return;
+      }
+      if (d.target.kind !== 'pan') {
+        if (d.moved) {
+          const pos = this.getBox(d.cell.frame);
+          const endBox = pos ? pos.box : d.startBox;
+          // Khi kéo resize 1 cạnh, bù độ dịch chuyển của tâm hộp vào pan của ô đó
+          // để sau khi nhả chuột, cạnh đối diện và đám mây điểm vẫn đứng yên tại chỗ (không bị nhảy hình)
+          if (d.target.kind === 'resize') {
+            const V = VIEWS[d.cell.view];
+            const dc = G.sub(endBox.c, d.startBox.c);
+            const du = G.dot(dc, d.cam.ax[V.u]);
+            const dv = G.dot(dc, d.cam.ax[V.v]);
+            d.cell.pan[0] += du * d.ppm;
+            d.cell.pan[1] -= dv * d.ppm;
+          }
+          this.onEditEnd?.(d.cell.frame, d.startBox, endBox);
+          this.requestRender();
         } else {
-          this.onEditCancel?.(this.drag.cell.frame);
+          this.onEditCancel?.(d.cell.frame);
         }
       }
-      this.drag = null;
     }
 
     wheel(e, cell) {

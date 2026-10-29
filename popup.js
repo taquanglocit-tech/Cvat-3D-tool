@@ -87,15 +87,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
           await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/bridge-main.js'], world: 'MAIN' });
           await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: CONTENT_SCRIPT_FILES });
+          await chrome.action.setBadgeBackgroundColor({ tabId: tab.id, color: '#177ddc' }).catch(() => {});
+          await chrome.action.setBadgeText({ tabId: tab.id, text: 'PRO' }).catch(() => {});
         } catch (e) {
           console.warn('[Popup] Kích hoạt trực tiếp:', e);
         }
       } else {
-        // Tắt trên domain này
+        // Tắt trên domain này và thu hồi quyền host_permissions
         let origins = await getOrigins();
         origins = origins.filter((o) => o !== origin);
         await chrome.storage.local.set({ origins });
+        await chrome.permissions.remove({ origins: [originToPermission(origin)] }).catch(() => {});
         await syncContentScripts();
+        await chrome.action.setBadgeText({ tabId: tab.id, text: '' }).catch(() => {});
       }
     } finally {
       toggleBtn.disabled = false;
@@ -108,7 +112,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/bridge-main.js'], world: 'MAIN' });
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: CONTENT_SCRIPT_FILES });
-      injectBtn.textContent = '✓ Đã kích hoạt lại!';
+      injectBtn.textContent = 'Đã kích hoạt lại!';
       setTimeout(() => { injectBtn.textContent = 'Tải lại / Kích hoạt lại ngay'; }, 1500);
     } catch (err) {
       alert(`Lỗi kích hoạt: ${err.message}`);

@@ -8,15 +8,209 @@
 
   const REQ = 'cvat-super-pro:req';
   const RES = 'cvat-super-pro:res';
+  const EVT = 'cvat-super-pro:evt';
   let ctx = null; // { core, store, dispatch, actionCreators }
+  let internalOpDepth = 0;
+  let lastInternalOpTs = 0;
+  let storeUnsubscribe = null;
+
+  function beginInternalOp() {
+    internalOpDepth += 1;
+    lastInternalOpTs = Date.now();
+  }
+
+  function endInternalOp() {
+    internalOpDepth = Math.max(0, internalOpDepth - 1);
+    lastInternalOpTs = Date.now();
+  }
+
+  function emitEvt(payload) {
+    document.dispatchEvent(new CustomEvent(EVT, { detail: JSON.stringify(payload) }));
+  }
+
+  // Phát sự kiện "đã lưu" (chống phát trùng khi cả Redux lẫn DOM cùng báo trong vài trăm ms)
+  let lastSavedEmitTs = 0;
+  function emitSaved(source) {
+    const now = Date.now();
+    if (now - lastSavedEmitTs < 1200) return;
+    lastSavedEmitTs = now;
+    emitEvt({ type: 'cvat-saved', source, unsaved: false });
+  }
+
+  function readUnsaved() {
+    try {
+      const job = ctx?.store?.getState?.()?.annotation?.job?.instance;
+      return job ? !!job.annotations.hasUnsavedChanges() : false;
+    } catch {
+      return false;
+    }
+  }
+
+  // Dự phòng DOM: theo dõi nút Save gốc của CVAT. Khi class "cvat-annotation-disabled-header-button"
+  // (chỉ bật trong lúc đang lưu) biến mất mà CVAT không còn thay đổi chưa lưu thì coi như lưu xong.
+  let saveBtnObserver = null;
+  let saveBtnWatched = null;
+  let saveBtnTimer = null;
+  function watchSaveButtonDom() {
+    if (saveBtnTimer) return;
+    const SAVE_SEL = '.cvat-annotation-header-save-button';
+    const DISABLED = 'cvat-annotation-disabled-header-button';
+    saveBtnTimer = setInterval(() => {
+      const btn = document.querySelector(SAVE_SEL);
+      if (!btn || btn === saveBtnWatched) return;
+      saveBtnObserver?.disconnect();
+      saveBtnWatched = btn;
+      let wasSaving = btn.classList.contains(DISABLED);
+      saveBtnObserver = new MutationObserver(() => {
+        const nowSaving = btn.classList.contains(DISABLED);
+        if (wasSaving && !nowSaving) {
+          // Đợi CVAT kịp xóa cờ unsaved rồi mới kiểm tra
+          setTimeout(() => { if (!readUnsaved()) emitSaved('dom'); }, 250);
+        }
+        wasSaving = nowSaving;
+      });
+      saveBtnObserver.observe(btn, { attributes: true, attributeFilter: ['class'] });
+    }, 1000);
+  }
+
+  function stopSaveButtonDomWatch() {
+    if (saveBtnTimer) { clearInterval(saveBtnTimer); saveBtnTimer = null; }
+    saveBtnObserver?.disconnect();
+    saveBtnObserver = null;
+    saveBtnWatched = null;
+  }
+
+  function setupStoreWatcher() {
+    if (!ctx || !ctx.store || typeof ctx.store.subscribe !== 'function') return;
+    if (storeUnsubscribe) {
+      try { storeUnsubscribe(); } catch {}
+      storeUnsubscribe = null;
+    }
+    watchSaveButtonDom();
+
+    let lastFrame = null;
+    let lastActiveId = null;
+    let lastFrameSig = '';
+    let lastHistSig = '';
+    let lastSaving = false;
+    let lastUnsaved = null;
+    let notifyTimer = null;
+    let pendingAnnotationsChanged = false;
+    let pendingFrameChanged = false;
+    let pendingActiveChanged = false;
+
+    const histKey = (a) => (Array.isArray(a) ? `${a[0]}@${a[1]}` : '');
+
+    // Hai chữ ký tách riêng:
+    //  - histSig : lịch sử Undo/Redo của CVAT, KHÔNG phụ thuộc frame (bắt được cả Undo/Redo nhảy frame)
+    //  - frameSig: trạng thái các cuboid track ở frame hiện tại, chỉ so sánh khi frame không đổi
+    //    (vì bước sang frame khác thì điểm nội suy đổi theo, không phải do người dùng sửa)
+    const computeSnapshot = () => {
+      const st = ctx?.store?.getState?.()?.annotation;
+      if (!st || !st.job?.instance || !st.player) return null;
+      const frame = st.player.frame?.number ?? 0;
+      const rawActive = st.annotations?.activatedStateID ?? st.canvas?.activeElement?.clientID ?? null;
+      const activeId = rawActive !== null && rawActive !== undefined ? Number(rawActive) : null;
+      const states = Array.isArray(st.annotations?.states) ? st.annotations.states : [];
+      const undo = st.annotations?.history?.undo || [];
+      const redo = st.annotations?.history?.redo || [];
+      const histSig = `${undo.length}|${redo.length}|${histKey(undo[undo.length - 1])}|${histKey(redo[redo.length - 1])}`;
+      const frameSig = states
+        .filter((s) => s && s.objectType === 'track' && s.shapeType === 'cuboid')
+        .map((s) => `${s.clientID}:${s.updated || 0}:${s.keyframe ? 1 : 0}:${s.outside ? 1 : 0}:${s.occluded ? 1 : 0}:${Array.isArray(s.points) ? s.points.map((v) => Number(v).toFixed(3)).join(',') : ''}`)
+        .join('|');
+      const saving = !!st.annotations?.saving?.uploading;
+      return { frame, activeId, histSig, frameSig, saving };
+    };
+
+    const initSnap = computeSnapshot();
+    if (initSnap) {
+      lastFrame = initSnap.frame;
+      lastActiveId = initSnap.activeId;
+      lastFrameSig = initSnap.frameSig;
+      lastHistSig = initSnap.histSig;
+      lastSaving = initSnap.saving;
+      lastUnsaved = readUnsaved();
+    }
+
+    storeUnsubscribe = ctx.store.subscribe(() => {
+      const snap = computeSnapshot();
+      if (!snap) return;
+
+      // 1. Sự kiện LƯU: uploading true -> false và CVAT không còn thay đổi chưa lưu
+      //    (Nút Save gốc và phím Ctrl+S cùng đi qua saveAnnotationsAsync nên cùng bị bắt ở đây)
+      const justFinishedSaving = lastSaving && !snap.saving;
+      lastSaving = snap.saving;
+      const unsaved = readUnsaved();
+      const unsavedChanged = unsaved !== lastUnsaved;
+      lastUnsaved = unsaved;
+      if (justFinishedSaving) {
+        if (!unsaved) emitSaved('redux');
+        else emitEvt({ type: 'cvat-save-failed', unsaved: true });
+      } else if (unsavedChanged) {
+        // Trạng thái "chưa lưu" gốc của CVAT thay đổi (kể cả do Tool ghi xuống) để Tool cập nhật nút Lưu
+        emitEvt({ type: 'cvat-unsaved', unsaved });
+      }
+
+      // 2. Thay đổi frame / track được chọn / dữ liệu annotation
+      const frameChanged = snap.frame !== lastFrame;
+      const activeChanged = snap.activeId !== lastActiveId;
+      const histChanged = snap.histSig !== lastHistSig;
+      const frameSigChanged = snap.frameSig !== lastFrameSig;
+      // Đổi frame đơn thuần làm frameSig đổi theo nên KHÔNG tính là sửa dữ liệu
+      const annotationsChanged = histChanged || (!frameChanged && frameSigChanged);
+
+      lastFrame = snap.frame;
+      lastActiveId = snap.activeId;
+      lastFrameSig = snap.frameSig;
+      lastHistSig = snap.histSig;
+
+      if (!frameChanged && !activeChanged && !annotationsChanged) return;
+
+      // Bỏ qua các thay đổi dữ liệu do chính Tool vừa ghi xuống CVAT để tránh vòng lặp đồng bộ thừa
+      const internal = internalOpDepth > 0 || (Date.now() - lastInternalOpTs < 140 && !activeChanged && !frameChanged);
+      if (internal && !frameChanged && !activeChanged) return;
+
+      if (annotationsChanged && !internal) pendingAnnotationsChanged = true;
+      if (frameChanged) pendingFrameChanged = true;
+      if (activeChanged) pendingActiveChanged = true;
+      if (!pendingAnnotationsChanged && !pendingFrameChanged && !pendingActiveChanged) return;
+
+      if (notifyTimer) clearTimeout(notifyTimer);
+      notifyTimer = setTimeout(() => {
+        notifyTimer = null;
+        const payload = {
+          type: 'cvat-updated',
+          frame: lastFrame,
+          activeId: lastActiveId,
+          annotationsChanged: pendingAnnotationsChanged,
+          frameChanged: pendingFrameChanged,
+          activeChanged: pendingActiveChanged,
+          unsaved: readUnsaved(),
+        };
+        pendingAnnotationsChanged = false;
+        pendingFrameChanged = false;
+        pendingActiveChanged = false;
+        emitEvt(payload);
+      }, pendingAnnotationsChanged && !pendingFrameChanged ? 150 : 60);
+    });
+  }
 
   function register() {
     if (ctx || !window.cvatUI || typeof window.cvatUI.registerComponent !== 'function') return !!ctx;
     window.cvatUI.registerComponent((args) => {
       ctx = args;
+      setupStoreWatcher();
       return {
         name: 'CVAT 3D Super Pro - taquanglocit-tech',
-        destructor: () => { ctx = null; }
+        destructor: () => {
+          if (storeUnsubscribe) {
+            try { storeUnsubscribe(); } catch {}
+            storeUnsubscribe = null;
+          }
+          stopSaveButtonDomWatch();
+          ctx = null;
+        }
       };
     });
     return !!ctx;
@@ -42,6 +236,22 @@
   function trackStatesAt(job, frame) {
     return job.annotations.get(frame, true, [])
       .then((states) => states.filter((s) => s.objectType === 'track' && s.shapeType === 'cuboid'));
+  }
+
+  // Xoay 180 độ quanh trục thẳng đứng cục bộ ez của Cuboid (giữ đúng độ nghiêng mặt dốc Roll/Pitch)
+  function flipEulerLocalZ(r) {
+    const a = Math.cos(r[0]), b = Math.sin(r[0]);
+    const c = Math.cos(r[1]), d = Math.sin(r[1]);
+    const e = Math.cos(r[2]), f = Math.sin(r[2]);
+    const ae = a * e, af = a * f, be = b * e, bf = b * f;
+    const ex = [-c * e, -(af + be * d), -(bf - ae * d)];
+    const ey = [c * f, -(ae - bf * d), -(be + af * d)];
+    const ez = [d, -b * c, a * c];
+    const y = Math.asin(Math.min(1, Math.max(-1, ez[0])));
+    if (Math.abs(ez[0]) < 0.9999999) {
+      return [Math.atan2(-ez[1], ez[2]), y, Math.atan2(-ey[0], ex[0])];
+    }
+    return [Math.atan2(ey[2], ey[1]), y, 0];
   }
 
   const methods = {
@@ -81,6 +291,7 @@
             keyframe: s.keyframe,
             outside: s.outside,
             occluded: s.occluded,
+            attributes: s.attributes && typeof s.attributes === 'object' ? { ...s.attributes } : {},
           }
         };
       } catch {
@@ -112,7 +323,7 @@
       return true;
     },
 
-    // Đảo đầu xe 180 độ tức thời trong RAM
+    // Đảo đầu xe 180 độ tức thời trong RAM (xoay chuẩn theo trục ez cục bộ của box)
     async flipActiveHeading({ clientID, frame, allFrames }) {
       const { job } = annotationState();
       const curFrame = frame !== undefined ? Number(frame) : ctx.store.getState().annotation.player.frame.number;
@@ -121,10 +332,8 @@
         const s = states.find((x) => x.clientID === Number(clientID));
         if (!s) return false;
         const pts = Array.from(s.points);
-        let yaw = pts[5] + Math.PI;
-        while (yaw > Math.PI) yaw -= 2 * Math.PI;
-        while (yaw < -Math.PI) yaw += 2 * Math.PI;
-        pts[5] = yaw;
+        const [rx, ry, rz] = flipEulerLocalZ([pts[3], pts[4], pts[5]]);
+        pts[3] = rx; pts[4] = ry; pts[5] = rz;
         s.points = pts;
         await s.save();
         await methods.refresh();
@@ -137,10 +346,8 @@
           const s = states.find((x) => x.clientID === Number(clientID));
           if (s && s.keyframe) {
             const pts = Array.from(s.points);
-            let yaw = pts[5] + Math.PI;
-            while (yaw > Math.PI) yaw -= 2 * Math.PI;
-            while (yaw < -Math.PI) yaw += 2 * Math.PI;
-            pts[5] = yaw;
+            const [rx, ry, rz] = flipEulerLocalZ([pts[3], pts[4], pts[5]]);
+            pts[3] = rx; pts[4] = ry; pts[5] = rz;
             s.points = pts;
             await s.save();
           }
@@ -150,7 +357,7 @@
       return true;
     },
 
-    // Dịch tâm Z sát đất tức thời
+    // Dịch tâm theo trục ez cục bộ của box để đáy chạm mặt đất tức thời
     async snapActiveGround({ clientID, frame, offsetZ }) {
       const { job } = annotationState();
       const curFrame = frame !== undefined ? Number(frame) : ctx.store.getState().annotation.player.frame.number;
@@ -158,11 +365,36 @@
       const s = states.find((x) => x.clientID === Number(clientID));
       if (!s) return false;
       const pts = Array.from(s.points);
-      pts[2] += Number(offsetZ);
+      const a = Math.cos(pts[3]), b = Math.sin(pts[3]);
+      const c = Math.cos(pts[4]), d = Math.sin(pts[4]);
+      const shift = Number(offsetZ);
+      pts[0] += d * shift;
+      pts[1] += (-b * c) * shift;
+      pts[2] += (a * c) * shift;
       s.points = pts;
       await s.save();
       await methods.refresh();
       return true;
+    },
+
+    // Lấy danh sách Labels kèm định nghĩa Attributes trực tiếp từ RAM của CVAT (luôn đồng bộ 100%)
+    async readLabels() {
+      const { job } = annotationState();
+      const st = ctx.store.getState().annotation;
+      const rawLabels = job.labels || st?.job?.labels || [];
+      return rawLabels.map((l) => ({
+        id: l.id,
+        name: l.name,
+        color: l.color,
+        attributes: Array.isArray(l.attributes) ? l.attributes.map((a) => ({
+          id: a.id,
+          name: a.name,
+          mutable: a.mutable !== false,
+          input_type: (a.inputType || a.input_type || 'select').toLowerCase(),
+          default_value: a.defaultValue ?? a.default_value ?? '',
+          values: Array.isArray(a.values) ? [...a.values] : (typeof a.values === 'string' ? a.values.split(/\r?\n/) : []),
+        })) : [],
+      }));
     },
 
     // Lấy toạ độ cuboid của tất cả các track ở dải frames từ RAM của CVAT
@@ -187,7 +419,9 @@
               occluded: !!s.occluded,
               z_order: s.zOrder || 0,
               rotation: 0,
-              attributes: [],
+              attributes: s.attributes && typeof s.attributes === 'object' && !Array.isArray(s.attributes)
+                ? { ...s.attributes }
+                : {},
             });
           }
         }
@@ -210,39 +444,163 @@
       };
     },
 
-    // Ghi các keyframe vào bộ nhớ RAM của CVAT qua ObjectState (tự tạo Undo history trên CVAT)
+    // Ghi các keyframe và attributes vào bộ nhớ RAM của CVAT qua ObjectState (tự tạo Undo history trên CVAT)
     async applyTrack({ clientID, shapes, current }) {
-      const { job } = annotationState();
-      const want = new Map(shapes.map((s) => [s.frame, s]));
-      const have = new Map(current.map((s) => [s.frame, s]));
-      const same = (a, b) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
-      let changed = 0;
+      beginInternalOp();
+      try {
+        const { job } = annotationState();
+        const want = new Map(shapes.map((s) => [s.frame, s]));
+        const have = new Map(current.map((s) => [s.frame, s]));
+        const same = (a, b) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
+        const sameAttrs = (a, b) => {
+          const objA = a && typeof a === 'object' && !Array.isArray(a) ? a : {};
+          const objB = b && typeof b === 'object' && !Array.isArray(b) ? b : {};
+          const keysA = Object.keys(objA);
+          const keysB = Object.keys(objB);
+          if (keysA.length !== keysB.length) return false;
+          return keysA.every((k) => (k in objB) && String(objA[k]) === String(objB[k]));
+        };
+        let changed = 0;
 
-      // Cập nhật hoặc thêm keyframe
-      for (const [frame, s] of want) {
-        const old = have.get(frame);
-        if (old && same(old.points, s.points) && old.outside === s.outside) continue;
-        const state = (await trackStatesAt(job, frame)).find((x) => x.clientID === clientID);
-        if (!state) {
-          console.warn(`[CVAT Super Pro] Bỏ qua: Không tìm thấy track ${clientID} ở frame ${frame}`);
-          continue;
+        // Cập nhật hoặc thêm keyframe
+        for (const [frame, s] of want) {
+          const old = have.get(frame);
+          const state = (await trackStatesAt(job, frame)).find((x) => x.clientID === clientID);
+          if (!state) {
+            console.warn(`[CVAT Super Pro] Bỏ qua: Không tìm thấy track ${clientID} ở frame ${frame}`);
+            continue;
+          }
+          const wasKf = !!state.keyframe;
+          if (wasKf && old && same(old.points, s.points) && old.outside === s.outside && !!old.occluded === !!s.occluded && sameAttrs(old.attributes, s.attributes)) {
+            continue;
+          }
+          // Đảm bảo nếu frame nằm trong danh sách keyframe của Tool nhưng trên CVAT đang là frame nội suy (keyframe == false)
+          // thì luôn bật state.keyframe = true trước khi lưu
+          if (!wasKf) state.keyframe = true;
+          if (!old || !wasKf || !same(old.points, s.points)) state.points = s.points;
+          if (!old || !wasKf || old.outside !== s.outside) state.outside = !!s.outside;
+          if (!old || !wasKf || !!old.occluded !== !!s.occluded) state.occluded = !!s.occluded;
+          if (!old || !wasKf || !sameAttrs(old.attributes, s.attributes)) {
+            if (s.attributes && typeof s.attributes === 'object' && !Array.isArray(s.attributes)) {
+              const nextAttrs = { ...(state.attributes || {}) };
+              for (const [k, v] of Object.entries(s.attributes)) {
+                const numK = Number(k);
+                nextAttrs[Number.isNaN(numK) ? k : numK] = String(v);
+              }
+              state.attributes = nextAttrs;
+            }
+          }
+          await state.save();
+          changed += 1;
         }
-        if (!old || !same(old.points, s.points)) state.points = s.points;
-        if (!old || old.outside !== s.outside) state.outside = s.outside;
-        await state.save();
-        changed += 1;
+
+        // Xoá bớt keyframe nếu người dùng bỏ
+        for (const frame of have.keys()) {
+          if (want.has(frame)) continue;
+          const state = (await trackStatesAt(job, frame)).find((x) => x.clientID === clientID);
+          if (!state || !state.keyframe) continue;
+          state.keyframe = false;
+          await state.save();
+          changed += 1;
+        }
+        return { changed };
+      } finally {
+        endInternalOp();
+      }
+    },
+
+    // Nhảy màn hình chính CVAT tới đúng Frame, kích hoạt Cuboid và lia Camera 3D nhìn thẳng vào tọa độ (X, Y, Z) của Cuboid
+    async focusTrackInMain({ frame, clientID, targetCenter }) {
+      if (!ctx) return false;
+      const targetFrame = Number(frame);
+      const curFrame = ctx.store?.getState()?.annotation?.player?.frame?.number;
+      await methods.changeFrame({ frame: targetFrame });
+
+      if (curFrame !== targetFrame) {
+        await new Promise((r) => setTimeout(r, 110));
       }
 
-      // Xoá bớt keyframe nếu người dùng bỏ
-      for (const frame of have.keys()) {
-        if (want.has(frame)) continue;
-        const state = (await trackStatesAt(job, frame)).find((x) => x.clientID === clientID);
-        if (!state) continue;
-        state.keyframe = false;
-        await state.save();
-        changed += 1;
+      if (clientID !== undefined && clientID !== null) {
+        await methods.activateObject({ clientID: Number(clientID) });
+        const sideItem = document.getElementById(`cvat-objects-sidebar-state-item-${clientID}`);
+        if (sideItem && typeof sideItem.scrollIntoView === 'function') {
+          sideItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
       }
-      return { changed };
+
+      // Lia Camera 3D của CVAT nhìn thẳng vào Cuboid
+      try {
+        const canvasInstance = ctx.store?.getState()?.annotation?.canvas?.instance;
+        if (canvasInstance) {
+          if (clientID !== undefined && clientID !== null && typeof canvasInstance.focus === 'function') {
+            canvasInstance.focus(Number(clientID));
+          }
+          if (Array.isArray(targetCenter) && targetCenter.length === 3) {
+            const [cx, cy, cz] = targetCenter;
+            const ctrl =
+              canvasInstance.view?.views?.perspective?.controls ||
+              canvasInstance.controller?.perspective?.controls ||
+              canvasInstance.model?.data?.views?.perspective?.controls ||
+              null;
+            if (ctrl) {
+              if (typeof ctrl.setTarget === 'function') {
+                ctrl.setTarget(cx, cy, cz, true);
+              } else if (ctrl.target && typeof ctrl.target.set === 'function') {
+                ctrl.target.set(cx, cy, cz);
+                ctrl.update?.();
+              }
+            }
+          }
+          canvasInstance.render?.();
+        }
+      } catch { /* Bỏ qua nếu phiên bản CVAT đóng gói controls khác */ }
+
+      return true;
+    },
+
+    // Đưa màn hình chính CVAT tới đúng Frame & vị trí 2 box bị trùng lặp (Overlap) để người dùng trực tiếp quan sát
+    async focusOverlapInMain({ frame, clientIDA, clientIDB, targetCenter, highlightBoxes }) {
+      if (!ctx) return false;
+      const targetFrame = Number(frame);
+      await methods.changeFrame({ frame: targetFrame });
+
+      // Đợi ngắn nếu CVAT vừa chuyển frame để Three.js kịp nạp xong cuboid của frame mới
+      await new Promise((r) => setTimeout(r, 120));
+
+      if (clientIDA !== undefined && clientIDA !== null) {
+        await methods.activateObject({ clientID: Number(clientIDA) });
+        const sideItem = document.getElementById(`cvat-objects-sidebar-state-item-${clientIDA}`);
+        if (sideItem && typeof sideItem.scrollIntoView === 'function') {
+          sideItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+
+      // Lia tâm xoay Camera 3D của CVAT về đúng trung điểm 2 box bị trùng lặp (nếu truy cập được controls)
+      try {
+        const canvasInstance = ctx.store?.getState()?.annotation?.canvas?.instance;
+        if (canvasInstance && Array.isArray(targetCenter) && targetCenter.length === 3) {
+          const [cx, cy, cz] = targetCenter;
+          const ctrl =
+            canvasInstance.controller?.perspective?.controls ||
+            canvasInstance.view?.views?.perspective?.controls ||
+            canvasInstance.model?.data?.views?.perspective?.controls ||
+            null;
+          if (ctrl && ctrl.target && typeof ctrl.target.set === 'function') {
+            ctrl.target.set(cx, cy, cz);
+            ctrl.update?.();
+          }
+        }
+      } catch { /* Bỏ qua nếu phiên bản CVAT đóng gói controls khác */ }
+
+      // Vẽ viền sáng nổi bật cho cả 2 box A và B trên màn hình 3D chính để nhìn thấy ngay sự chồng lấn
+      if (Array.isArray(highlightBoxes) && highlightBoxes.length) {
+        await methods.showGhostInMainScene({ ghosts: highlightBoxes });
+        if (window.__cvatSuperProOverlapTimer) clearTimeout(window.__cvatSuperProOverlapTimer);
+        window.__cvatSuperProOverlapTimer = setTimeout(() => {
+          methods.hideGhostInMainScene().catch(() => {});
+        }, 6000);
+      }
+      return true;
     },
 
     // Vẽ lại canvas CVAT mà không tải lại trang và không bị treo loading spinner
@@ -253,6 +611,7 @@
       if (!job) return false;
       const frame = st.player.frame.number;
 
+      beginInternalOp();
       try {
         await methods.hideGhostInMainScene();
         // 1. Đọc danh sách states và history mới nhất từ Job trong RAM
@@ -303,6 +662,8 @@
         }
       } catch (err) {
         console.warn('[CVAT Super Pro] Lỗi khi làm mới canvas qua Redux:', err);
+      } finally {
+        endInternalOp();
       }
 
       return true;
@@ -503,6 +864,83 @@
         canvasInstance.render?.();
       }
       return true;
+    },
+
+    // Sắp xếp và đổi thứ tự Track ID trong RAM CVAT (Khôi phục đúng thứ tự ID Prelabel theo Guideline)
+    async reassignTrackIDs({ assignments }) {
+      if (!ctx) throw new Error('Chưa kết nối được với plugin CVAT');
+      const { job } = annotationState();
+      if (!job || !job.annotations) throw new Error('Không tìm thấy job annotations trên CVAT');
+      if (!Array.isArray(assignments) || !assignments.length) return { ok: true, changed: 0 };
+
+      beginInternalOp();
+      try {
+        const exported = await job.annotations.export();
+        if (!exported || !Array.isArray(exported.tracks) || !exported.tracks.length) {
+          throw new Error('Không tìm thấy tracks nào trong CVAT để sắp xếp ID');
+        }
+
+        const idMap = new Map();
+        for (const item of assignments) {
+          idMap.set(Number(item.oldId), Number(item.newId));
+        }
+
+        // Gán targetID cho từng track
+        const tracksWithTarget = exported.tracks.map((t) => ({
+          track: t,
+          targetId: idMap.has(Number(t.clientID)) ? idMap.get(Number(t.clientID)) : Number(t.clientID),
+        }));
+
+        // Kiểm tra trùng lặp
+        const seenTargetIds = new Set();
+        for (const item of tracksWithTarget) {
+          if (seenTargetIds.has(item.targetId)) {
+            throw new Error(`Phát hiện trùng lặp Target ID #${item.targetId}`);
+          }
+          seenTargetIds.add(item.targetId);
+        }
+
+        const maxTargetId = Math.max(...tracksWithTarget.map((x) => x.targetId));
+        const finalOrderedTracks = [];
+        const trackByTarget = new Map(tracksWithTarget.map((x) => [x.targetId, x.track]));
+
+        for (let id = 1; id <= maxTargetId; id++) {
+          if (trackByTarget.has(id)) {
+            finalOrderedTracks.push(trackByTarget.get(id));
+          } else {
+            // Placeholder rỗng: trackFactory của CVAT Core sẽ trả về null khi shapes rỗng
+            // giúp clientID counter nhảy qua số này mà không sinh rác
+            finalOrderedTracks.push({
+              frame: 0,
+              label_id: exported.tracks[0].label_id,
+              shapes: [],
+              attributes: [],
+            });
+          }
+        }
+
+        // Xóa collection trong RAM
+        await job.annotations.clear();
+
+        // Reset bộ đếm clientID về 0 để track đầu tiên nhận ID 1
+        if (ctx.core?.config) {
+          ctx.core.config.globalObjectsCounter = 0;
+        }
+
+        // Nạp lại toàn bộ dữ liệu đã sắp xếp đúng thứ tự ID mới
+        await job.annotations.import({
+          ...exported,
+          tracks: finalOrderedTracks,
+        });
+
+        // Refresh Redux & Canvas3D
+        await methods.refresh();
+        emitEvt({ type: 'cvat-annotations-changed', source: 'reassign-ids' });
+
+        return { ok: true, changed: assignments.length };
+      } finally {
+        endInternalOp();
+      }
     },
   };
 

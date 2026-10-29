@@ -19,6 +19,7 @@ const CONTENT_SCRIPT_FILES = [
   'content/case1.js',
   'content/case2.js',
   'content/case3.js',
+  'content/case4.js',
   'content/context-menu.js',
   'content/hud.js',
   'content/hotkeys.js',
